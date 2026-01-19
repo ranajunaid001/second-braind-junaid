@@ -2,76 +2,21 @@ import json
 from datetime import datetime
 from openai import OpenAI
 from config import OPENAI_API_KEY
+from prompts import CLASSIFIER_PROMPT, get_extract_fields_prompt
 
 # Initialize OpenAI client
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =============================================================================
-# CLASSIFICATION RULES - EDIT THIS SECTION TO IMPROVE OUTPUTS
+# CLASSIFICATION RULES
 # =============================================================================
 
 CONFIDENCE_THRESHOLD = 0.6  # Below this, ask user to confirm
-
-CATEGORIES = {
-    "people": "contacts, relationships, info about specific people, observations, cues, anything about a person",
-    "ideas": "product ideas, things to build, concepts to explore",
-    "interviews": "job opportunities, leads, applications, interview prep, companies hiring",
-    "admin": "bills, appointments, errands, daily tasks, chores",
-    "linkedin": "content ideas for LinkedIn posts"
-}
 
 # Keywords that FORCE a category (checked before LLM)
 FORCE_RULES = {
     "linkedin": ["draft"],  # If message contains "draft", always linkedin
 }
-
-# =============================================================================
-# CLASSIFIER PROMPT - EDIT THIS TO CHANGE LLM BEHAVIOR
-# =============================================================================
-
-CLASSIFIER_PROMPT = """You are a classifier for a personal second brain.
-
-Classify the user message into exactly one bucket:
-- people (contacts, relationships, info about specific people - names, facts, observations, cues, anything about a person)
-- ideas (product ideas, things to build, concepts to explore)
-- interviews (job opportunities, leads, applications, interview prep)
-- admin (bills, appointments, errands, daily tasks)
-- linkedin (content ideas for LinkedIn posts)
-
-Return JSON ONLY. No markdown. No extra text.
-
-{
-  "bucket": "people|ideas|interviews|admin|linkedin",
-  "confidence": 0.0-1.0,
-  "fields": {}
-}
-
-The "fields" object depends on the bucket:
-
-For "people":
-{"name": "person's name (REQUIRED - extract from message)", "context": "who they are/how you know them", "follow_ups": "any action item mentioned, or empty"}
-
-For "ideas":
-{"idea": "short title", "one_liner": "one sentence description", "notes": "any extra details"}
-
-For "interviews":
-{"company": "company name", "role": "job role if mentioned", "status": "Lead|Applied|Scheduled|Completed", "next_step": "what to do next", "date": "date if mentioned or empty"}
-
-For "admin":
-{"task": "short title", "status": "Open", "due": "date if mentioned or empty", "next_action": "concrete next step"}
-
-For "linkedin":
-{"idea": "post topic or hook", "notes": "the full story or details", "status": "Draft"}
-
-IMPORTANT RULES:
-1. If message mentions a person's name + any info about them → ALWAYS "people"
-2. If message contains "draft" → ALWAYS "linkedin"
-3. "call someone", "follow up with someone" → "people" (it's about the person)
-4. "pay bill", "buy groceries", "schedule appointment" → "admin"
-5. confidence 0.9+ = very sure, 0.7-0.89 = likely, 0.6-0.69 = weak, <0.6 = uncertain
-
-User message:
-"""
 
 
 def check_force_rules(message: str) -> str | None:
@@ -118,18 +63,8 @@ def classify(message: str) -> dict:
 
 def extract_fields(message: str, bucket: str) -> dict:
     """Extract fields for a forced bucket classification."""
-    # Simple extraction for forced rules - LLM still does the heavy lifting
     try:
-        prompt = f"""Extract fields from this message for the "{bucket}" category.
-
-Return JSON ONLY:
-"""
-        if bucket == "linkedin":
-            prompt += '{"idea": "post topic", "notes": "full content", "status": "Draft"}'
-        elif bucket == "people":
-            prompt += '{"name": "person name", "context": "who they are", "follow_ups": "any action"}'
-        
-        prompt += f"\n\nMessage: {message}"
+        prompt = get_extract_fields_prompt(bucket, message)
         
         response = client.chat.completions.create(
             model="gpt-4o-mini",
