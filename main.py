@@ -90,7 +90,10 @@ def save_to_notion(captured_text: str, classification: dict) -> str:
     }
     
     try:
+        print(f"Sending to Notion with DB ID: {INBOX_LOG_DB_ID}")
         response = requests.post(url, headers=headers, json=data)
+        print(f"Notion response status: {response.status_code}")
+        print(f"Notion response body: {response.text}")
         response.raise_for_status()
         return response.json().get("url", "saved")
     except Exception as e:
