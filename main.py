@@ -20,22 +20,37 @@ CLASSIFIER_PROMPT = """You are a classifier for a personal second brain.
 
 Classify the user message into exactly one bucket:
 - people (contacts, relationships, follow-ups with people)
-- projects (tasks, goals, things to do)
-- ideas (thoughts, concepts, things to explore)
-- admin (bills, appointments, logistics, chores)
+- ideas (product ideas, things to build, concepts to explore)
+- interviews (job opportunities, leads, applications, interview prep)
+- admin (bills, appointments, errands, daily tasks)
 
 Return JSON ONLY. No markdown. No extra text.
 
 {
-  "bucket": "people|projects|ideas|admin",
-  "title": "short descriptive title",
-  "confidence": 0.0-1.0
+  "bucket": "people|ideas|interviews|admin",
+  "confidence": 0.0-1.0,
+  "fields": {}
 }
 
+The "fields" object depends on the bucket:
+
+For "people":
+{"name": "person's name", "context": "who they are/how you know them", "follow_ups": "next thing to remember or ask"}
+
+For "ideas":
+{"idea": "short title", "one_liner": "one sentence description", "notes": "any extra details"}
+
+For "interviews":
+{"company": "company name", "role": "job role if mentioned", "status": "Lead|Applied|Scheduled|Completed", "next_step": "what to do next", "date": "date if mentioned or empty"}
+
+For "admin":
+{"task": "short title", "status": "Open", "due": "date if mentioned or empty", "next_action": "concrete next step"}
+
 Rules:
+- Infer the bucket based on intent
+- Extract as much info as possible from the message
+- If a field is not mentioned, make a reasonable inference or leave empty
 - confidence 0.9+ = very sure, 0.7-0.89 = likely, 0.6-0.69 = weak, <0.6 = uncertain
-- title should be specific and human readable
-- If unsure, still pick best guess but lower confidence
 
 User message:
 """
@@ -66,26 +81,72 @@ def classify_message(message: str) -> dict:
         print(f"Classification error: {e}")
         return {
             "bucket": "admin",
-            "title": "NEEDS REVIEW: " + message[:50],
-            "confidence": 0.3
+            "confidence": 0.3,
+            "fields": {"task": message[:50], "status": "Open", "due": "", "next_action": "Review this item"}
         }
 
 def save_to_sheets(captured_text: str, classification: dict) -> bool:
-    """Save the classified message to Google Sheets."""
+    """Save the classified message to the appropriate Google Sheet tab."""
     try:
         client = get_sheets_client()
-        sheet = client.open_by_key(SHEET_ID).sheet1
+        spreadsheet = client.open_by_key(SHEET_ID)
         
-        row = [
-            classification["title"],
-            captured_text,
-            classification["bucket"].capitalize(),
-            classification["confidence"],
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ]
+        bucket = classification["bucket"]
+        fields = classification["fields"]
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Save to the appropriate sheet based on bucket
+        if bucket == "people":
+            sheet = spreadsheet.worksheet("People")
+            row = [
+                fields.get("name", ""),
+                fields.get("context", ""),
+                fields.get("follow_ups", ""),
+                timestamp
+            ]
+        elif bucket == "ideas":
+            sheet = spreadsheet.worksheet("Ideas")
+            row = [
+                fields.get("idea", ""),
+                fields.get("one_liner", ""),
+                fields.get("notes", "")
+            ]
+        elif bucket == "interviews":
+            sheet = spreadsheet.worksheet("Interviews")
+            row = [
+                fields.get("company", ""),
+                fields.get("role", ""),
+                fields.get("status", "Lead"),
+                fields.get("next_step", ""),
+                fields.get("date", "")
+            ]
+        elif bucket == "admin":
+            sheet = spreadsheet.worksheet("Admin")
+            row = [
+                fields.get("task", ""),
+                fields.get("status", "Open"),
+                fields.get("due", ""),
+                fields.get("next_action", "")
+            ]
+        else:
+            # Fallback to Inbox Log
+            sheet = spreadsheet.sheet1
+            row = [captured_text, bucket, classification["confidence"], timestamp]
         
         sheet.append_row(row)
-        print(f"Saved to sheets: {classification['title']}")
+        
+        # Also log to Inbox Log (Sheet1)
+        inbox = spreadsheet.sheet1
+        title = fields.get("name") or fields.get("idea") or fields.get("company") or fields.get("task") or captured_text[:50]
+        inbox.append_row([
+            title,
+            captured_text,
+            bucket.capitalize(),
+            classification["confidence"],
+            timestamp
+        ])
+        
+        print(f"Saved to {bucket}: {title}")
         return True
     except Exception as e:
         print(f"Sheets error: {e}")
@@ -104,12 +165,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Step 3: Reply to user
     if success:
         confidence_pct = int(classification["confidence"] * 100)
+        fields = classification["fields"]
+        title = fields.get("name") or fields.get("idea") or fields.get("company") or fields.get("task") or "Item"
+        
         reply = f"✓ Filed as: {classification['bucket'].capitalize()}\n"
-        reply += f"Title: {classification['title']}\n"
+        reply += f"Title: {title}\n"
         reply += f"Confidence: {confidence_pct}%"
         
         if classification["confidence"] < 0.6:
-            reply += "\n\n⚠️ Low confidence. Reply with: people / projects / ideas / admin to correct."
+            reply += "\n\n⚠️ Low confidence. Reply with: people / ideas / interviews / admin to correct."
     else:
         reply = "❌ Error saving. Please try again."
     
