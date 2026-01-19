@@ -23,11 +23,12 @@ Classify the user message into exactly one bucket:
 - ideas (product ideas, things to build, concepts to explore)
 - interviews (job opportunities, leads, applications, interview prep)
 - admin (bills, appointments, errands, daily tasks)
+- linkedin (content ideas for LinkedIn posts)
 
 Return JSON ONLY. No markdown. No extra text.
 
 {
-  "bucket": "people|ideas|interviews|admin",
+  "bucket": "people|ideas|interviews|admin|linkedin",
   "confidence": 0.0-1.0,
   "fields": {}
 }
@@ -45,6 +46,9 @@ For "interviews":
 
 For "admin":
 {"task": "short title", "status": "Open", "due": "date if mentioned or empty", "next_action": "concrete next step"}
+
+For "linkedin":
+{"idea": "post topic or hook", "notes": "any extra details or angles", "status": "Draft"}
 
 Rules:
 - Infer the bucket based on intent
@@ -128,6 +132,13 @@ def save_to_sheets(captured_text: str, classification: dict) -> bool:
                 fields.get("due", ""),
                 fields.get("next_action", "")
             ]
+        elif bucket == "linkedin":
+            sheet = spreadsheet.worksheet("LinkedIn")
+            row = [
+                fields.get("idea", ""),
+                fields.get("notes", ""),
+                fields.get("status", "Draft")
+            ]
         else:
             # Fallback to Inbox Log
             sheet = spreadsheet.sheet1
@@ -157,7 +168,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text.strip().lower()
     
     # Check if this is a correction response
-    if user_message in ["people", "ideas", "interviews", "admin"]:
+    if user_message in ["people", "ideas", "interviews", "admin", "linkedin"]:
         # User is correcting a previous classification
         if "pending_message" in context.user_data:
             pending = context.user_data["pending_message"]
@@ -198,7 +209,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply += f"Message: \"{user_message[:50]}{'...' if len(user_message) > 50 else ''}\"\n"
         reply += f"My guess: {classification['bucket'].capitalize()} ({int(classification['confidence'] * 100)}%)\n\n"
         reply += "Reply with the correct category:\n"
-        reply += "• people\n• ideas\n• interviews\n• admin"
+        reply += "• people\n• ideas\n• interviews\n• admin\n• linkedin"
         
         await update.message.reply_text(reply)
         return
