@@ -148,14 +148,27 @@ def needs_confirmation(confidence: float) -> bool:
 
 
 def format_person_info(person: dict) -> str:
-    """Format person info for display."""
+    """Format person info for display - clean and readable."""
     result = f"👤 {person['name']}\n"
+    
     if person.get('context'):
-        result += f"Context: {person['context']}\n"
+        result += f"{person['context']}\n"
+    
+    result += "\n"
+    
     if person.get('notes'):
-        result += f"Notes: {person['notes']}\n"
-    if person.get('follow_ups'):
-        result += f"Follow-ups: {person['follow_ups']}\n"
-    if person.get('last_touched'):
-        result += f"Last updated: {person['last_touched']}"
-    return result
+        # Parse notes and display as bullet points without dates
+        notes = person['notes']
+        # Split by bullet separator
+        note_list = notes.split(' • ')
+        for note in note_list:
+            # Remove date prefix like [2026-01-19]
+            clean_note = note
+            if note.startswith('['):
+                clean_note = note.split('] ', 1)[-1]
+            result += f"• {clean_note}\n"
+    
+    if person.get('follow_ups') and not person['follow_ups'].startswith('2026'):
+        result += f"\n📌 {person['follow_ups']}\n"
+    
+    return result.strip()
