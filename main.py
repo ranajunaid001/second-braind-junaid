@@ -237,9 +237,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message_lower = user_message.lower()
     message_id = update.message.message_id
     
-    # Check if this is a fix command (e.g., "fix: admin")
-    if user_message_lower.startswith("fix:"):
-        new_bucket = user_message_lower.replace("fix:", "").strip()
+    # Check if this is a fix command (e.g., "fix admin", "fx admin", "fx ppl")
+    if user_message_lower.startswith("fix") or user_message_lower.startswith("fx"):
+        # Remove "fix"/"fx" and optional colon, get the bucket
+        new_bucket = user_message_lower.replace("fix:", "").replace("fix", "").replace("fx:", "").replace("fx", "").strip()
+        
+        # Map shortcuts to full names
+        bucket_shortcuts = {
+            "ppl": "people",
+            "p": "people",
+            "people": "people",
+            "idea": "ideas",
+            "ideas": "ideas",
+            "i": "ideas",
+            "int": "interviews",
+            "interview": "interviews",
+            "interviews": "interviews",
+            "adm": "admin",
+            "admin": "admin",
+            "a": "admin",
+            "li": "linkedin",
+            "ln": "linkedin",
+            "linkedin": "linkedin",
+            "l": "linkedin"
+        }
+        
+        new_bucket = bucket_shortcuts.get(new_bucket, new_bucket)
+        
         if new_bucket in ["people", "ideas", "interviews", "admin", "linkedin"]:
             # Get the last saved message for this user
             if "last_message" in context.user_data:
@@ -253,7 +277,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 reply = "❌ No recent message to fix."
         else:
-            reply = "❌ Invalid category. Use: fix: people / ideas / interviews / admin / linkedin"
+            reply = "❌ Invalid category. Use: fix people / fix ideas / fix interviews / fix admin / fix linkedin"
         
         await update.message.reply_text(reply)
         return
@@ -322,7 +346,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply = f"✓ Filed as: {classification['bucket'].capitalize()}\n"
         reply += f"Title: {title}\n"
         reply += f"Confidence: {confidence_pct}%\n"
-        reply += f"Reply 'fix: <category>' if wrong."
+        reply += f"Reply 'fix <category>' if wrong."
         
         # Store for potential fix later
         context.user_data["last_message"] = {
