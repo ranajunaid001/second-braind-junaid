@@ -8,6 +8,7 @@ from flask import Flask, jsonify
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENAI_API_KEY
 from classifier import classify, needs_confirmation, format_person_info
 from memory import save_entry, fix_entry, get_items, get_digest_data, find_person
+from prompts import DIGEST_PROMPT, get_top_items_prompt
 from openai import OpenAI
 
 # Flask app for cron endpoints
@@ -44,22 +45,7 @@ TABLE_SHORTCUTS = {
 
 def generate_digest(data):
     """Use ChatGPT to generate daily digest."""
-    prompt = """Generate a daily digest. Be extremely concise. No fluff.
-
-Rules:
-- Max 3 bullet points
-- Each bullet = one specific action (verb + what)
-- Include company name or person name if relevant
-- No greetings, no sign-offs
-
-Example format:
-• Follow up with Stripe recruiter about PM role
-• Pay electricity bill (due Friday)
-• Call mom re: birthday plans
-
-Data:
-"""
-    prompt += json.dumps(data, indent=2)
+    prompt = DIGEST_PROMPT + json.dumps(data, indent=2)
     
     try:
         response = openai_client.chat.completions.create(
@@ -78,12 +64,7 @@ def format_top_items(table_name, items):
     if not items:
         return f"No active items in {table_name}."
     
-    prompt = f"""Format these {table_name} items as a short bullet list. Max 5 items.
-Each bullet should be one line, actionable if possible.
-No headers, no fluff.
-
-Data:
-{json.dumps(items[:5])}"""
+    prompt = get_top_items_prompt(table_name, items)
     
     try:
         response = openai_client.chat.completions.create(
