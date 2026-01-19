@@ -31,14 +31,27 @@ Telegram → Railway (Python) → Google Sheets
 
 | File | Purpose |
 |------|---------|
-| `main.py` | Interface - Telegram bot, Flask endpoints, message routing |
-| `classifier.py` | Compute - AI classification logic, prompts, rules |
-| `memory.py` | Memory - All Google Sheets read/write operations |
-| `config.py` | Config - Environment variables |
+| `main.py` | **Interface** - Telegram bot, Flask endpoints, message routing |
+| `classifier.py` | **Compute** - Classification logic, confidence checking |
+| `memory.py` | **Memory** - All Google Sheets read/write operations |
+| `prompts.py` | **Prompts** - All LLM prompts in one place (edit this to improve AI) |
+| `config.py` | **Config** - Environment variables |
 | `requirements.txt` | Python dependencies |
 | `Procfile` | Railway process configuration |
 | `runtime.txt` | Python version (3.11) |
-| `README.md` | This file |
+
+## Editing Prompts
+
+All LLM prompts are in `prompts.py`. Edit this file to improve AI behavior:
+
+| Prompt | Purpose |
+|--------|---------|
+| `CLASSIFIER_PROMPT` | Classifies messages into buckets |
+| `DIGEST_PROMPT` | Generates daily digest |
+| `get_top_items_prompt()` | Formats top items per category |
+| `get_extract_fields_prompt()` | Extracts fields when force rules apply |
+| `WEEKLY_REVIEW_PROMPT` | Weekly review (future) |
+| `MISCLASSIFICATION_PROMPT` | Analyze misclassifications (future) |
 
 ## Google Sheets Structure
 
@@ -178,12 +191,6 @@ Edit `classifier.py` to change rules:
 
 ### Force Rules (override LLM)
 - Message contains "draft" → Always LinkedIn
-
-### LLM Rules
-- Person's name + info → People
-- Job opportunity, company hiring → Interviews
-- Pay, buy, schedule, bill → Admin
-- Product idea, build, app → Ideas
 
 ### Confidence Threshold
 - Above 60%: Auto-classify and save
