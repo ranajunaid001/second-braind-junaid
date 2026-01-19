@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from openai import OpenAI
 from config import OPENAI_API_KEY
 
@@ -170,5 +171,15 @@ def format_person_info(person: dict) -> str:
     
     if person.get('follow_ups') and not person['follow_ups'].startswith('2026'):
         result += f"\n📌 {person['follow_ups']}\n"
+    
+    if person.get('last_touched'):
+        # Format date nicely
+        try:
+            date_str = person['last_touched'][:10]  # Get YYYY-MM-DD
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+            nice_date = date_obj.strftime("%b %d")  # Jan 19
+            result += f"\nLast updated: {nice_date}"
+        except:
+            pass
     
     return result.strip()
