@@ -197,9 +197,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         table_name = TABLE_SHORTCUTS.get(table_request)
         
         if table_name == "all":
-            success, message = send_digest_sync()
-            if not success:
-                await update.message.reply_text("❌ Could not generate digest.")
+            # Send full digest directly (async)
+            data = get_digest_data()
+            if not data:
+                await update.message.reply_text("❌ Could not fetch data.")
+                return
+            
+            if not data["interviews"] and not data["admin"] and not data["people"]:
+                reply = "📋 Daily Digest\n\nNo pending actions. You're all caught up! 🎉"
+            else:
+                reply = generate_digest(data)
+                if not reply:
+                    await update.message.reply_text("❌ Could not generate digest.")
+                    return
+            
+            await update.message.reply_text(reply)
             return
         elif table_name:
             items = get_items(table_name)
