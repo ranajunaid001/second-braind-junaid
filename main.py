@@ -4,13 +4,14 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from openai import OpenAI
-import requests
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Environment variables - you set these in Railway
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
-INBOX_LOG_DB_ID = os.environ.get("INBOX_LOG_DB_ID")
+GOOGLE_SHEETS_CREDS = os.environ.get("GOOGLE_SHEETS_CREDS")
+SHEET_ID = os.environ.get("SHEET_ID")
 
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -39,6 +40,16 @@ Rules:
 User message:
 """
 
+def get_sheets_client():
+    """Initialize Google Sheets client."""
+    creds_dict = json.loads(GOOGLE_SHEETS_CREDS)
+    scopes = [
+        'https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/drive'
+    ]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    return gspread.authorize(creds)
+
 def classify_message(message: str) -> dict:
     """Send message to ChatGPT for classification."""
     try:
@@ -59,59 +70,39 @@ def classify_message(message: str) -> dict:
             "confidence": 0.3
         }
 
-def save_to_notion(captured_text: str, classification: dict) -> str:
-    """Save the classified message to Notion Inbox Log."""
-    url = "https://api.notion.com/v1/pages"
-    headers = {
-        "Authorization": f"Bearer {NOTION_API_KEY}",
-        "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28"
-    }
-    
-    data = {
-        "parent": {"database_id": INBOX_LOG_DB_ID},
-        "properties": {
-            "Name": {
-                "title": [{"text": {"content": classification["title"]}}]
-            },
-            "Captured text": {
-                "rich_text": [{"text": {"content": captured_text[:2000]}}]
-            },
-            "Classified as": {
-                "select": {"name": classification["bucket"].capitalize()}
-            },
-            "Confidence": {
-                "number": classification["confidence"]
-            },
-            "Timestamp": {
-                "date": {"start": datetime.now().isoformat()}
-            }
-        }
-    }
-    
+def save_to_sheets(captured_text: str, classification: dict) -> bool:
+    """Save the classified message to Google Sheets."""
     try:
-        print(f"Sending to Notion with DB ID: {INBOX_LOG_DB_ID}")
-        response = requests.post(url, headers=headers, json=data)
-        print(f"Notion response status: {response.status_code}")
-        print(f"Notion response body: {response.text}")
-        response.raise_for_status()
-        return response.json().get("url", "saved")
+        client = get_sheets_client()
+        sheet = client.open_by_key(SHEET_ID).sheet1
+        
+        row = [
+            classification["title"],
+            captured_text,
+            classification["bucket"].capitalize(),
+            classification["confidence"],
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ]
+        
+        sheet.append_row(row)
+        print(f"Saved to sheets: {classification['title']}")
+        return True
     except Exception as e:
-        print(f"Notion error: {e}")
-        return None
+        print(f"Sheets error: {e}")
+        return False
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Classify message and save to Notion."""
+    """Classify message and save to Google Sheets."""
     user_message = update.message.text
     
     # Step 1: Classify with ChatGPT
     classification = classify_message(user_message)
     
-    # Step 2: Save to Notion
-    notion_url = save_to_notion(user_message, classification)
+    # Step 2: Save to Google Sheets
+    success = save_to_sheets(user_message, classification)
     
     # Step 3: Reply to user
-    if notion_url:
+    if success:
         confidence_pct = int(classification["confidence"] * 100)
         reply = f"✓ Filed as: {classification['bucket'].capitalize()}\n"
         reply += f"Title: {classification['title']}\n"
@@ -120,7 +111,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if classification["confidence"] < 0.6:
             reply += "\n\n⚠️ Low confidence. Reply with: people / projects / ideas / admin to correct."
     else:
-        reply = "❌ Error saving to Notion. Please try again."
+        reply = "❌ Error saving. Please try again."
     
     await update.message.reply_text(reply)
 
@@ -128,8 +119,8 @@ def main():
     missing = []
     if not TELEGRAM_TOKEN: missing.append("TELEGRAM_TOKEN")
     if not OPENAI_API_KEY: missing.append("OPENAI_API_KEY")
-    if not NOTION_API_KEY: missing.append("NOTION_API_KEY")
-    if not INBOX_LOG_DB_ID: missing.append("INBOX_LOG_DB_ID")
+    if not GOOGLE_SHEETS_CREDS: missing.append("GOOGLE_SHEETS_CREDS")
+    if not SHEET_ID: missing.append("SHEET_ID")
     
     if missing:
         print(f"ERROR: Missing environment variables: {', '.join(missing)}")
