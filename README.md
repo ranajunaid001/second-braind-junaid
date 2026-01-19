@@ -11,9 +11,11 @@ Drop a thought into Telegram → AI classifies it → Stored in the right Google
 - **Capture**: Send any thought to Telegram bot
 - **Classify**: GPT-4o-mini classifies into 5 categories
 - **Store**: Automatically routes to correct Google Sheet tab
+- **People Intelligence**: Remembers everything about people, appends notes to existing profiles
 - **Fix**: Correct misclassifications with `fix admin` or `fx ppl`
 - **Digest**: Daily summary at 10AM via cron job
 - **Top Items**: Request top items per category with `top admin`
+- **Who Lookup**: Get all info about a person with `who john`
 
 ## Architecture
 
@@ -29,7 +31,10 @@ Telegram → Railway (Python) → Google Sheets
 
 | File | Purpose |
 |------|---------|
-| `main.py` | Main application - Telegram bot, Flask endpoints, all logic |
+| `main.py` | Interface - Telegram bot, Flask endpoints, message routing |
+| `classifier.py` | Compute - AI classification logic, prompts, rules |
+| `memory.py` | Memory - All Google Sheets read/write operations |
+| `config.py` | Config - Environment variables |
 | `requirements.txt` | Python dependencies |
 | `Procfile` | Railway process configuration |
 | `runtime.txt` | Python version (3.11) |
@@ -40,12 +45,13 @@ Telegram → Railway (Python) → Google Sheets
 ### Tab: People
 | Column | Description |
 |--------|-------------|
-| Name | Person's name |
+| Name | Person's name (unique identifier) |
 | Context | Who they are, how you know them |
-| Follow-ups | Next thing to remember/ask |
-| Last touched | Timestamp |
+| Notes | Running log of everything about them (auto-appends) |
+| Follow-ups | Active action items |
+| Last touched | Auto-updated timestamp |
 | message_id | Telegram message ID |
-| is_active | TRUE/FALSE (for soft delete) |
+| is_active | TRUE/FALSE |
 
 ### Tab: Ideas
 | Column | Description |
@@ -91,8 +97,8 @@ Telegram → Railway (Python) → Google Sheets
 |--------|-------------|
 | Title | Short title |
 | Captured text | Original message |
-| Classified as | Category (People, Ideas, etc.) |
-| Confidence | 0-1 confidence score |
+| Classified as | Category |
+| Confidence | 0-1 score |
 | Timestamp | When captured |
 | message_id | Telegram message ID |
 | fixed_to | If corrected, the new category |
@@ -109,47 +115,85 @@ Telegram → Railway (Python) → Google Sheets
 
 ## Telegram Commands
 
-### Capture
-Just send any message. Examples:
-- "Met John at conference, works at Google"
-- "Pay electricity bill by Friday"
-- "draft - story about my first job rejection"
+### Capture (just send any message)
+```
+John works at Google and likes coffee
+Pay electricity bill by Friday
+draft - story about my first job rejection
+Stripe is hiring for PM role
+Build an app for habit tracking
+```
+
+### Who Lookup
+```
+who john
+who john?
+who sarah
+```
+Returns all info about a person in clean format.
 
 ### Fix Misclassification
-If the bot classifies wrong, reply with:
-- `fix admin` or `fx a`
-- `fix people` or `fx ppl`
-- `fix ideas` or `fx i`
-- `fix interviews` or `fx int`
-- `fix linkedin` or `fx li`
+```
+fix admin
+fix people
+fx ppl
+fx a
+fx i
+```
 
 ### Get Top Items
-Request top items from any category:
-- `top admin` or `top a`
-- `top people` or `top ppl`
-- `top ideas` or `top i`
-- `top interviews` or `top int`
-- `top linkedin` or `top li`
-- `top all` — full digest
+```
+top admin
+top people
+top interviews
+top ideas
+top linkedin
+top all
+```
+
+## People Feature
+
+The People tab is special — it builds profiles over time:
+
+1. First message: "John works at Google" → Creates new John entry
+2. Second message: "John has 2 kids" → Appends to John's Notes
+3. Third message: "John's birthday is March 15" → Appends again
+4. `who john` → Returns everything about John
+
+Notes display as bullet points:
+```
+👤 John
+works at Google
+
+• John works at Google and likes coffee
+• John has 2 kids and loves hiking
+• John's birthday is March 15
+
+Last updated: Jan 19
+```
 
 ## Classification Rules
 
-### Priority Keywords
-- **LinkedIn**: Message contains "draft" → always LinkedIn
-- **Interviews**: Job opportunities, companies hiring, applications
-- **Admin**: Bills, appointments, errands, tasks with "pay", "buy", "schedule"
-- **Ideas**: Product ideas, things to build, concepts
-- **People**: Contacts, relationships, follow-ups with specific people
+Edit `classifier.py` to change rules:
+
+### Force Rules (override LLM)
+- Message contains "draft" → Always LinkedIn
+
+### LLM Rules
+- Person's name + info → People
+- Job opportunity, company hiring → Interviews
+- Pay, buy, schedule, bill → Admin
+- Product idea, build, app → Ideas
 
 ### Confidence Threshold
-- ≥ 61%: Auto-classify and save
-- ≤ 60%: Ask user to confirm category
+- Above 60%: Auto-classify and save
+- 60% or below: Ask user to confirm
 
 ## API Endpoints
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/digest` | GET/POST | Trigger daily digest (called by cron) |
+| `/digest` | GET/POST | Trigger daily digest |
 | `/health` | GET | Health check |
 
 ## Cron Job Setup (cron-job.org)
@@ -177,35 +221,30 @@ export TELEGRAM_CHAT_ID=your_chat_id
 python main.py
 ```
 
-## Deployment (Railway)
-
-1. Push code to GitHub
-2. Connect GitHub repo to Railway
-3. Add environment variables in Railway dashboard
-4. Deploy automatically on push
-
-## Future Improvements
-
-- [ ] Weekly review with misclassification report
-- [ ] Idempotency (prevent duplicate processing)
-- [ ] Offset persistence (handle restarts)
-- [ ] Strict LLM validation
-- [ ] Retry with backoff on failures
-- [ ] Separate rules.json for classification rules
-- [ ] AI evals dashboard
-
 ## Troubleshooting
 
 ### "Conflict: terminated by other getUpdates request"
-Multiple bot instances running. Reset webhook:
+Multiple bot instances running. Wait a minute or reset webhook:
 ```
 https://api.telegram.org/bot<TOKEN>/deleteWebhook?drop_pending_updates=true
 ```
 
 ### "Sheets error"
 - Check sheet tab names match exactly (case-sensitive)
-- Verify service account has edit access to the sheet
+- Verify service account has edit access
+
+### "No one found matching"
+- Check People tab has data with is_active = TRUE
+- Try without punctuation: `who john` not `who john?`
 
 ### Digest not sending
-- Check `TELEGRAM_CHAT_ID` is set correctly
-- Test manually: visit `/digest` endpoint in browser
+- Check `TELEGRAM_CHAT_ID` is correct
+- Test manually: visit `/digest` endpoint
+
+## Future Improvements
+
+- [ ] Weekly review with misclassification report
+- [ ] Multiple Johns handling (ask which one)
+- [ ] Voice message support
+- [ ] Image/screenshot capture
+- [ ] Calendar integration
