@@ -171,6 +171,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ----- COMMAND: who <name> -----
     if user_message_lower.startswith("who "):
         name = user_message[4:].strip()
+        # Strip punctuation from search
+        name = name.rstrip('?!.,;:')
         matches = find_person(name)
         
         if not matches:
