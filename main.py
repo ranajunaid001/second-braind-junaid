@@ -90,7 +90,7 @@ def classify_message(message: str) -> dict:
             "fields": {"task": message[:50], "status": "Open", "due": "", "next_action": "Review this item"}
         }
 
-def save_to_sheets(captured_text: str, classification: dict) -> bool:
+def save_to_sheets(captured_text: str, classification: dict, message_id: int) -> bool:
     """Save the classified message to the appropriate Google Sheet tab."""
     try:
         client = get_sheets_client()
@@ -107,14 +107,18 @@ def save_to_sheets(captured_text: str, classification: dict) -> bool:
                 fields.get("name", ""),
                 fields.get("context", ""),
                 fields.get("follow_ups", ""),
-                timestamp
+                timestamp,
+                message_id,
+                "TRUE"
             ]
         elif bucket == "ideas":
             sheet = spreadsheet.worksheet("Ideas")
             row = [
                 fields.get("idea", ""),
                 fields.get("one_liner", ""),
-                fields.get("notes", "")
+                fields.get("notes", ""),
+                message_id,
+                "TRUE"
             ]
         elif bucket == "interviews":
             sheet = spreadsheet.worksheet("Interviews")
@@ -123,7 +127,9 @@ def save_to_sheets(captured_text: str, classification: dict) -> bool:
                 fields.get("role", ""),
                 fields.get("status", "Lead"),
                 fields.get("next_step", ""),
-                fields.get("date", "")
+                fields.get("date", ""),
+                message_id,
+                "TRUE"
             ]
         elif bucket == "admin":
             sheet = spreadsheet.worksheet("Admin")
@@ -131,14 +137,18 @@ def save_to_sheets(captured_text: str, classification: dict) -> bool:
                 fields.get("task", ""),
                 fields.get("status", "Open"),
                 fields.get("due", ""),
-                fields.get("next_action", "")
+                fields.get("next_action", ""),
+                message_id,
+                "TRUE"
             ]
         elif bucket == "linkedin":
             sheet = spreadsheet.worksheet("LinkedIn")
             row = [
                 fields.get("idea", ""),
                 fields.get("notes", ""),
-                fields.get("status", "Draft")
+                fields.get("status", "Draft"),
+                message_id,
+                "TRUE"
             ]
         else:
             # Fallback to Inbox Log
@@ -155,7 +165,8 @@ def save_to_sheets(captured_text: str, classification: dict) -> bool:
             captured_text,
             bucket.capitalize(),
             classification["confidence"],
-            timestamp
+            timestamp,
+            message_id
         ])
         
         print(f"Saved to {bucket}: {title}")
@@ -164,25 +175,110 @@ def save_to_sheets(captured_text: str, classification: dict) -> bool:
         print(f"Sheets error: {e}")
         return False
 
+
+def fix_entry(message_id: int, new_bucket: str, original_text: str) -> bool:
+    """Move an entry from one sheet to another."""
+    try:
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SHEET_ID)
+        
+        # Find the entry in all sheets by message_id
+        sheets_to_check = ["People", "Ideas", "Interviews", "Admin", "LinkedIn"]
+        found_sheet = None
+        found_row_idx = None
+        found_row_data = None
+        
+        for sheet_name in sheets_to_check:
+            try:
+                sheet = spreadsheet.worksheet(sheet_name)
+                all_values = sheet.get_all_values()
+                
+                # Find row with matching message_id (second to last column)
+                for idx, row in enumerate(all_values[1:], start=2):  # Skip header, 1-indexed
+                    if len(row) >= 2:
+                        # message_id is second to last column
+                        msg_id_col = -2
+                        if str(row[msg_id_col]) == str(message_id):
+                            found_sheet = sheet_name
+                            found_row_idx = idx
+                            found_row_data = row
+                            break
+                if found_sheet:
+                    break
+            except:
+                continue
+        
+        if not found_sheet:
+            print(f"Could not find entry with message_id {message_id}")
+            return False
+        
+        # Mark old entry as inactive
+        old_sheet = spreadsheet.worksheet(found_sheet)
+        is_active_col = len(found_row_data)  # Last column
+        old_sheet.update_cell(found_row_idx, is_active_col, "FALSE")
+        
+        # Re-classify with forced bucket to get proper fields
+        classification = classify_message(original_text)
+        classification["bucket"] = new_bucket
+        classification["confidence"] = 1.0
+        
+        # Save to new sheet
+        save_to_sheets(original_text, classification, message_id)
+        
+        print(f"Moved from {found_sheet} to {new_bucket}")
+        return True
+    except Exception as e:
+        print(f"Fix error: {e}")
+        return False
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Classify message and save to Google Sheets."""
-    user_message = update.message.text.strip().lower()
+    user_message = update.message.text.strip()
+    user_message_lower = user_message.lower()
+    message_id = update.message.message_id
     
-    # Check if this is a correction response
-    if user_message in ["people", "ideas", "interviews", "admin", "linkedin"]:
+    # Check if this is a fix command (e.g., "fix: admin")
+    if user_message_lower.startswith("fix:"):
+        new_bucket = user_message_lower.replace("fix:", "").strip()
+        if new_bucket in ["people", "ideas", "interviews", "admin", "linkedin"]:
+            # Get the last saved message for this user
+            if "last_message" in context.user_data:
+                last = context.user_data["last_message"]
+                success = fix_entry(last["message_id"], new_bucket, last["original_text"])
+                
+                if success:
+                    reply = f"✓ Fixed. Moved to {new_bucket.capitalize()}."
+                else:
+                    reply = "❌ Could not find the entry to fix."
+            else:
+                reply = "❌ No recent message to fix."
+        else:
+            reply = "❌ Invalid category. Use: fix: people / ideas / interviews / admin / linkedin"
+        
+        await update.message.reply_text(reply)
+        return
+    
+    # Check if this is a correction response for low confidence
+    if user_message_lower in ["people", "ideas", "interviews", "admin", "linkedin"]:
         # User is correcting a previous classification
         if "pending_message" in context.user_data:
             pending = context.user_data["pending_message"]
             # Override the bucket with user's choice
-            pending["classification"]["bucket"] = user_message
+            pending["classification"]["bucket"] = user_message_lower
             pending["classification"]["confidence"] = 1.0
             
-            success = save_to_sheets(pending["original_text"], pending["classification"])
+            success = save_to_sheets(pending["original_text"], pending["classification"], pending["message_id"])
             
             if success:
                 fields = pending["classification"]["fields"]
                 title = fields.get("name") or fields.get("idea") or fields.get("company") or fields.get("task") or "Item"
-                reply = f"✓ Corrected and filed as: {user_message.capitalize()}\nTitle: {title}"
+                reply = f"✓ Corrected and filed as: {user_message_lower.capitalize()}\nTitle: {title}"
+                
+                # Store for potential fix later
+                context.user_data["last_message"] = {
+                    "message_id": pending["message_id"],
+                    "original_text": pending["original_text"]
+                }
             else:
                 reply = "❌ Error saving. Please try again."
             
@@ -190,17 +286,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(reply)
             return
     
-    user_message = update.message.text  # Get original (non-lowercased) message
-    
     # Step 1: Classify with ChatGPT
     classification = classify_message(user_message)
     
     # Step 2: Check confidence
-    if classification["confidence"] < 0.6:
+    if classification["confidence"] <= 0.6:
         # Store pending message and ask for confirmation
         context.user_data["pending_message"] = {
             "original_text": user_message,
-            "classification": classification
+            "classification": classification,
+            "message_id": message_id
         }
         
         fields = classification["fields"]
@@ -216,7 +311,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Step 3: Save to Google Sheets (high confidence)
-    success = save_to_sheets(user_message, classification)
+    success = save_to_sheets(user_message, classification, message_id)
     
     # Step 4: Reply to user
     if success:
@@ -226,7 +321,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         reply = f"✓ Filed as: {classification['bucket'].capitalize()}\n"
         reply += f"Title: {title}\n"
-        reply += f"Confidence: {confidence_pct}%"
+        reply += f"Confidence: {confidence_pct}%\n"
+        reply += f"Reply 'fix: <category>' if wrong."
+        
+        # Store for potential fix later
+        context.user_data["last_message"] = {
+            "message_id": message_id,
+            "original_text": user_message
+        }
     else:
         reply = "❌ Error saving. Please try again."
     
