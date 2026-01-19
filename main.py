@@ -154,15 +154,59 @@ def save_to_sheets(captured_text: str, classification: dict) -> bool:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Classify message and save to Google Sheets."""
-    user_message = update.message.text
+    user_message = update.message.text.strip().lower()
+    
+    # Check if this is a correction response
+    if user_message in ["people", "ideas", "interviews", "admin"]:
+        # User is correcting a previous classification
+        if "pending_message" in context.user_data:
+            pending = context.user_data["pending_message"]
+            # Override the bucket with user's choice
+            pending["classification"]["bucket"] = user_message
+            pending["classification"]["confidence"] = 1.0
+            
+            success = save_to_sheets(pending["original_text"], pending["classification"])
+            
+            if success:
+                fields = pending["classification"]["fields"]
+                title = fields.get("name") or fields.get("idea") or fields.get("company") or fields.get("task") or "Item"
+                reply = f"✓ Corrected and filed as: {user_message.capitalize()}\nTitle: {title}"
+            else:
+                reply = "❌ Error saving. Please try again."
+            
+            del context.user_data["pending_message"]
+            await update.message.reply_text(reply)
+            return
+    
+    user_message = update.message.text  # Get original (non-lowercased) message
     
     # Step 1: Classify with ChatGPT
     classification = classify_message(user_message)
     
-    # Step 2: Save to Google Sheets
+    # Step 2: Check confidence
+    if classification["confidence"] < 0.6:
+        # Store pending message and ask for confirmation
+        context.user_data["pending_message"] = {
+            "original_text": user_message,
+            "classification": classification
+        }
+        
+        fields = classification["fields"]
+        title = fields.get("name") or fields.get("idea") or fields.get("company") or fields.get("task") or user_message[:30]
+        
+        reply = f"🤔 Not sure about this one.\n\n"
+        reply += f"Message: \"{user_message[:50]}{'...' if len(user_message) > 50 else ''}\"\n"
+        reply += f"My guess: {classification['bucket'].capitalize()} ({int(classification['confidence'] * 100)}%)\n\n"
+        reply += "Reply with the correct category:\n"
+        reply += "• people\n• ideas\n• interviews\n• admin"
+        
+        await update.message.reply_text(reply)
+        return
+    
+    # Step 3: Save to Google Sheets (high confidence)
     success = save_to_sheets(user_message, classification)
     
-    # Step 3: Reply to user
+    # Step 4: Reply to user
     if success:
         confidence_pct = int(classification["confidence"] * 100)
         fields = classification["fields"]
@@ -171,9 +215,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply = f"✓ Filed as: {classification['bucket'].capitalize()}\n"
         reply += f"Title: {title}\n"
         reply += f"Confidence: {confidence_pct}%"
-        
-        if classification["confidence"] < 0.6:
-            reply += "\n\n⚠️ Low confidence. Reply with: people / ideas / interviews / admin to correct."
     else:
         reply = "❌ Error saving. Please try again."
     
