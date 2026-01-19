@@ -237,11 +237,102 @@ def fix_entry(message_id: int, new_bucket: str, original_text: str) -> bool:
         print(f"Fix error: {e}")
         return False
 
+def get_top_items(table_name):
+    """Get top items from a specific table."""
+    try:
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SHEET_ID)
+        
+        sheet = spreadsheet.worksheet(table_name)
+        rows = sheet.get_all_values()[1:]  # Skip header
+        
+        items = []
+        for row in rows:
+            # Check is_active (last column)
+            if len(row) >= 2 and row[-1] == "TRUE":
+                items.append(row)
+        
+        return items
+    except Exception as e:
+        print(f"Error getting top items from {table_name}: {e}")
+        return []
+
+
+def format_top_items(table_name, items):
+    """Format items for Telegram message."""
+    if not items:
+        return f"No active items in {table_name}."
+    
+    prompt = f"""Format these {table_name} items as a short bullet list. Max 5 items.
+Each bullet should be one line, actionable if possible.
+No headers, no fluff.
+
+Data:
+{json.dumps(items[:5])}"""
+    
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error formatting items: {e}")
+        # Fallback to simple format
+        result = f"Top {table_name}:\n"
+        for item in items[:5]:
+            result += f"• {item[0]}\n"
+        return result
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Classify message and save to Google Sheets."""
     user_message = update.message.text.strip()
     user_message_lower = user_message.lower()
     message_id = update.message.message_id
+    
+    # Check if this is a "top" command (e.g., "top admin", "top people")
+    if user_message_lower.startswith("top"):
+        table_request = user_message_lower.replace("top", "").strip()
+        
+        # Map shortcuts to full names
+        table_shortcuts = {
+            "ppl": "People",
+            "p": "People",
+            "people": "People",
+            "idea": "Ideas",
+            "ideas": "Ideas",
+            "i": "Ideas",
+            "int": "Interviews",
+            "interview": "Interviews",
+            "interviews": "Interviews",
+            "adm": "Admin",
+            "admin": "Admin",
+            "a": "Admin",
+            "li": "LinkedIn",
+            "ln": "LinkedIn",
+            "linkedin": "LinkedIn",
+            "l": "LinkedIn",
+            "all": "all"
+        }
+        
+        table_name = table_shortcuts.get(table_request)
+        
+        if table_name == "all":
+            # Send full digest
+            success, message = send_digest_sync()
+            if not success:
+                await update.message.reply_text("❌ Could not generate digest.")
+            return
+        elif table_name:
+            items = get_top_items(table_name)
+            reply = format_top_items(table_name, items)
+            await update.message.reply_text(reply)
+            return
+        else:
+            await update.message.reply_text("❌ Unknown table. Use: top people / admin / interviews / ideas / linkedin / all")
+            return
     
     # Check if this is a fix command (e.g., "fix admin", "fx admin", "fx ppl")
     if user_message_lower.startswith("fix") or user_message_lower.startswith("fx"):
@@ -429,22 +520,18 @@ def get_digest_data():
 
 def generate_digest(data):
     """Use ChatGPT to generate daily digest."""
-    prompt = """You are a personal assistant. Create a daily digest with the TOP 3 actions for today.
+    prompt = """Generate a daily digest. Be extremely concise. No fluff.
 
-Priority order:
-1. Interviews (most important)
-2. Admin tasks
-3. People follow-ups
+Rules:
+- Max 3 bullet points
+- Each bullet = one specific action (verb + what)
+- Include company name or person name if relevant
+- No greetings, no sign-offs
 
-Format your response EXACTLY like this:
-📋 Daily Digest
-
-Top 3 Actions:
-1. [Most important action]
-2. [Second action]
-3. [Third action]
-
-Keep it short and actionable. No fluff.
+Example format:
+• Follow up with Stripe recruiter about PM role
+• Pay electricity bill (due Friday)
+• Call mom re: birthday plans
 
 Data:
 """
