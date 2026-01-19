@@ -23,7 +23,7 @@ Classify the user message into exactly one bucket:
 - ideas (product ideas, things to build, concepts to explore)
 - interviews (job opportunities, leads, applications, interview prep)
 - admin (bills, appointments, errands, daily tasks)
-- linkedin (content ideas for LinkedIn posts)
+- linkedin (content ideas for LinkedIn posts - IMPORTANT: if message contains "draft" or starts with "draft", it's ALWAYS linkedin)
 
 Return JSON ONLY. No markdown. No extra text.
 
@@ -48,9 +48,10 @@ For "admin":
 {"task": "short title", "status": "Open", "due": "date if mentioned or empty", "next_action": "concrete next step"}
 
 For "linkedin":
-{"idea": "post topic or hook", "notes": "any extra details or angles", "status": "Draft"}
+{"idea": "post topic or hook", "notes": "the full story or details", "status": "Draft"}
 
 Rules:
+- If message contains the word "draft" anywhere, classify as linkedin
 - Infer the bucket based on intent
 - Extract as much info as possible from the message
 - If a field is not mentioned, make a reasonable inference or leave empty
