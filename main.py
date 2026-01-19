@@ -1,20 +1,26 @@
 import os
 import json
+import threading
 from datetime import datetime
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from openai import OpenAI
 import gspread
 from google.oauth2.service_account import Credentials
+from flask import Flask, jsonify
 
 # Environment variables - you set these in Railway
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 GOOGLE_SHEETS_CREDS = os.environ.get("GOOGLE_SHEETS_CREDS")
 SHEET_ID = os.environ.get("SHEET_ID")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")  # Your chat ID for digest
 
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Flask app for cron endpoint
+flask_app = Flask(__name__)
 
 CLASSIFIER_PROMPT = """You are a classifier for a personal second brain.
 
@@ -358,16 +364,175 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(reply)
 
+def get_digest_data():
+    """Pull data from sheets for daily digest."""
+    try:
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SHEET_ID)
+        
+        data = {
+            "interviews": [],
+            "admin": [],
+            "people": []
+        }
+        
+        # Get Interviews (active ones)
+        try:
+            sheet = spreadsheet.worksheet("Interviews")
+            rows = sheet.get_all_values()[1:]  # Skip header
+            for row in rows:
+                if len(row) >= 6 and row[-1] == "TRUE":  # is_active
+                    data["interviews"].append({
+                        "company": row[0],
+                        "role": row[1],
+                        "status": row[2],
+                        "next_step": row[3],
+                        "date": row[4]
+                    })
+        except Exception as e:
+            print(f"Error reading Interviews: {e}")
+        
+        # Get Admin (open tasks)
+        try:
+            sheet = spreadsheet.worksheet("Admin")
+            rows = sheet.get_all_values()[1:]
+            for row in rows:
+                if len(row) >= 5 and row[-1] == "TRUE" and row[1] == "Open":
+                    data["admin"].append({
+                        "task": row[0],
+                        "status": row[1],
+                        "due": row[2],
+                        "next_action": row[3]
+                    })
+        except Exception as e:
+            print(f"Error reading Admin: {e}")
+        
+        # Get People (with follow-ups)
+        try:
+            sheet = spreadsheet.worksheet("People")
+            rows = sheet.get_all_values()[1:]
+            for row in rows:
+                if len(row) >= 6 and row[-1] == "TRUE" and row[2]:  # has follow_ups
+                    data["people"].append({
+                        "name": row[0],
+                        "context": row[1],
+                        "follow_ups": row[2]
+                    })
+        except Exception as e:
+            print(f"Error reading People: {e}")
+        
+        return data
+    except Exception as e:
+        print(f"Error getting digest data: {e}")
+        return None
+
+
+def generate_digest(data):
+    """Use ChatGPT to generate daily digest."""
+    prompt = """You are a personal assistant. Create a daily digest with the TOP 3 actions for today.
+
+Priority order:
+1. Interviews (most important)
+2. Admin tasks
+3. People follow-ups
+
+Format your response EXACTLY like this:
+📋 Daily Digest
+
+Top 3 Actions:
+1. [Most important action]
+2. [Second action]
+3. [Third action]
+
+Keep it short and actionable. No fluff.
+
+Data:
+"""
+    prompt += json.dumps(data, indent=2)
+    
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error generating digest: {e}")
+        return None
+
+
+async def send_digest_async():
+    """Send digest via Telegram."""
+    data = get_digest_data()
+    if not data:
+        return False, "Could not fetch data"
+    
+    # Check if there's anything to report
+    if not data["interviews"] and not data["admin"] and not data["people"]:
+        message = "📋 Daily Digest\n\nNo pending actions. You're all caught up! 🎉"
+    else:
+        message = generate_digest(data)
+        if not message:
+            return False, "Could not generate digest"
+    
+    try:
+        bot = Bot(token=TELEGRAM_TOKEN)
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        return True, "Digest sent"
+    except Exception as e:
+        print(f"Error sending digest: {e}")
+        return False, str(e)
+
+
+def send_digest_sync():
+    """Synchronous wrapper for sending digest."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(send_digest_async())
+    loop.close()
+    return result
+
+
+@flask_app.route("/digest", methods=["GET", "POST"])
+def digest_endpoint():
+    """Endpoint for cron job to trigger daily digest."""
+    success, message = send_digest_sync()
+    if success:
+        return jsonify({"status": "ok", "message": message}), 200
+    else:
+        return jsonify({"status": "error", "message": message}), 500
+
+
+@flask_app.route("/health", methods=["GET"])
+def health_check():
+    """Health check endpoint."""
+    return jsonify({"status": "ok"}), 200
+
+
+def run_flask():
+    """Run Flask in a separate thread."""
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port)
+
+
 def main():
     missing = []
     if not TELEGRAM_TOKEN: missing.append("TELEGRAM_TOKEN")
     if not OPENAI_API_KEY: missing.append("OPENAI_API_KEY")
     if not GOOGLE_SHEETS_CREDS: missing.append("GOOGLE_SHEETS_CREDS")
     if not SHEET_ID: missing.append("SHEET_ID")
+    if not TELEGRAM_CHAT_ID: missing.append("TELEGRAM_CHAT_ID")
     
     if missing:
         print(f"ERROR: Missing environment variables: {', '.join(missing)}")
         return
+    
+    # Start Flask in background thread for cron endpoints
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print("Flask server started for cron endpoints...")
     
     print("Starting bot...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
