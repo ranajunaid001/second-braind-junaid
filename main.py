@@ -365,6 +365,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("I'm not sure who you're asking about. Try including a name or specific detail.")
             return
 
+    # ----- TASKS PHRASES -----
+    tasks_phrases = [
+        "items for today",
+        "give me top things for today",
+        "what do i need to do today",
+        "what's due today",
+        "whats due today",
+        "today's tasks",
+        "todays tasks",
+        "what's on my plate",
+        "whats on my plate"
+    ]
+    
+    if user_message_lower in tasks_phrases or user_message_lower.rstrip("?") in tasks_phrases:
+        items = get_items("Things")
+        reply = format_top_items("Things", items)
+        await update.message.reply_text(reply)
+        return
+
     if user_message_lower.startswith("top"):
         table_request = user_message_lower.replace("top", "").strip()
         table_name = TABLE_SHORTCUTS.get(table_request)
