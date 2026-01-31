@@ -52,8 +52,8 @@ def save_entry(captured_text: str, classification: dict, message_id: int) -> boo
                 message_id,
                 "TRUE"
             ]
-        elif bucket == "admin":
-            sheet = spreadsheet.worksheet("Admin")
+        elif bucket == "things":
+            sheet = spreadsheet.worksheet("Things")
             row = [
                 fields.get("task", ""),
                 fields.get("status", "Open"),
@@ -194,7 +194,7 @@ def fix_entry(message_id: int, new_bucket: str, original_text: str, classificati
         spreadsheet = client.open_by_key(SHEET_ID)
         
         # Find the entry in all sheets by message_id
-        sheets_to_check = ["People", "Ideas", "Interviews", "Admin", "LinkedIn"]
+        sheets_to_check = ["People", "Ideas", "Interviews", "Things", "LinkedIn"]
         found_sheet = None
         found_row_idx = None
         found_row_data = None
@@ -280,7 +280,7 @@ def get_digest_data() -> dict:
         
         data = {
             "interviews": [],
-            "admin": [],
+            "things": [],
             "people": []
         }
         
@@ -300,20 +300,20 @@ def get_digest_data() -> dict:
         except Exception as e:
             print(f"Error reading Interviews: {e}")
         
-        # Get Admin (open tasks)
+        # Get Things (open tasks)
         try:
-            sheet = spreadsheet.worksheet("Admin")
+            sheet = spreadsheet.worksheet("Things")
             rows = sheet.get_all_values()[1:]
             for row in rows:
                 if len(row) >= 5 and row[-1] == "TRUE" and row[1] == "Open":
-                    data["admin"].append({
+                    data["things"].append({
                         "task": row[0],
                         "status": row[1],
                         "due": row[2],
                         "next_action": row[3]
                     })
         except Exception as e:
-            print(f"Error reading Admin: {e}")
+            print(f"Error reading Things: {e}")
         
         # Get People (with follow-ups)
         try:
