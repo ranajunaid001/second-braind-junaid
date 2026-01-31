@@ -85,27 +85,41 @@ def needs_confirmation(confidence: float) -> bool:
 
 def is_person_question(message: str) -> dict:
     """
-    Detect if message is a question about a person.
+    Detect if message is a question about a person or a search for people.
     
     Returns:
     - {"is_question": False} if not a question
-    - {"is_question": True, "name": "Sarah", "query": "what does she do"} if question
+    - {"is_question": True, "name": "Sarah", "query": "what does she do"} if question about specific person
+    - {"is_question": True, "name": null, "search_query": "lives in Boston"} if searching for people
     """
-    prompt = f"""Analyze this message. Is the user asking a question about a specific person?
+    prompt = f"""Analyze this message. Is the user asking a question about people?
 
 Message: "{message}"
 
-Rules:
-- Questions like "What does Sarah do?", "Tell me about John", "Who is Mike?" → YES
-- Questions like "Who works at Google?", "Who did I meet last week?" → YES (searching for people)
-- New info like "Sarah loves chocolate", "Met John at conference" → NO (adding info, not asking)
-- Commands like "update Sarah", "edit John" → NO
-- General questions like "What's the weather?" → NO
+IMPORTANT - Two types of questions:
+
+TYPE 1 - Question about a SPECIFIC person (has a name):
+- "What does Sarah do?" → name: "Sarah"
+- "Tell me about John" → name: "John"  
+- "Who is Mike?" → name: "Mike"
+- "Where does Julia work?" → name: "Julia"
+
+TYPE 2 - SEARCH for people by criteria (NO specific name):
+- "Who works at Google?" → search_query: "works at Google"
+- "Who lives in Boston?" → search_query: "lives in Boston"
+- "Who has a dog?" → search_query: "has a dog"
+- "Who did I meet at residency?" → search_query: "met at residency"
+- "Who knows Sydney Sweeney?" → search_query: "knows Sydney Sweeney"
+
+NOT a question (adding new info):
+- "Sarah loves chocolate" → NO
+- "Met John at conference" → NO
+- "Alex got promoted" → NO
 
 Return JSON only:
-- If NOT a question about people: {{"is_question": false}}
-- If asking about specific person: {{"is_question": true, "name": "extracted name or null", "query": "what they're asking"}}
-- If searching for people: {{"is_question": true, "name": null, "search_query": "who works at Google"}}"""
+- If NOT a question: {{"is_question": false}}
+- If TYPE 1 (specific person): {{"is_question": true, "name": "the person's name", "query": "what they're asking"}}
+- If TYPE 2 (search): {{"is_question": true, "name": null, "search_query": "the criteria without 'who'"}}"""
 
     try:
         response = client.chat.completions.create(
