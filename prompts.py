@@ -14,7 +14,7 @@ Classify the user message into exactly one bucket:
 - people (contacts, relationships, info about specific people - names, facts, observations, cues, anything about a person)
 - ideas (product ideas, things to build, concepts to explore)
 - interviews (job opportunities, leads, applications, interview prep)
-- things (bills, appointments, errands, daily tasks)
+- things (bills, appointments, errands, daily tasks - NO person's name as subject)
 - linkedin (content ideas for LinkedIn posts)
 
 Return JSON ONLY. No markdown. No extra text.
@@ -42,12 +42,16 @@ For "things":
 For "linkedin":
 {"idea": "post topic or hook", "notes": "the full story or details", "status": "Draft"}
 
-IMPORTANT RULES:
-1. If message mentions a person's name + any info about them → ALWAYS "people"
-2. If message contains "draft" → ALWAYS "linkedin"
-3. "call someone", "follow up with someone" → "people" (it's about the person)
-4. "pay bill", "buy groceries", "schedule appointment" → "things"
-5. confidence 0.9+ = very sure, 0.7-0.89 = likely, 0.6-0.69 = weak, <0.6 = uncertain
+IMPORTANT RULES (in priority order):
+1. If message starts with or mentions a person's name (like "Julia", "Alex", "Bob") + anything about them → ALWAYS "people", even if it includes tasks or travel plans
+2. "Julia is traveling to Paris" → "people" (info about Julia)
+3. "Alex needs help buying a car" → "people" (info about Alex)
+4. "Bob is getting married" → "people" (info about Bob)
+5. "Sarah said she'd help me" → "people" (info about Sarah)
+6. ONLY use "things" when there is NO person's name as the subject
+7. "pay bill", "buy groceries", "schedule appointment" (no specific person) → "things"
+8. If message contains "draft" → ALWAYS "linkedin"
+9. confidence 0.9+ = very sure, 0.7-0.89 = likely, 0.6-0.69 = weak, <0.6 = uncertain
 
 DATA CLEANING RULES (apply to all fields):
 1. Capitalize names properly (alex → Alex, AR/VI → AR/VR)
@@ -57,13 +61,32 @@ DATA CLEANING RULES (apply to all fields):
 5. Remove filler words like "um", "uh", "like"
 6. Keep it concise but complete
 
-Example:
+Example 1:
 Input: "met alex at residency, leads products for ar/vi, says he's interested in my startup"
-Output fields for people:
+Output: bucket = "people"
 {
   "name": "Alex",
   "context": "Met at residency. Leads product for AR/VR. Interested in my startup.",
   "follow_ups": ""
+}
+
+Example 2:
+Input: "Julia is traveling to Paris next week"
+Output: bucket = "people"
+{
+  "name": "Julia",
+  "context": "Traveling to Paris next week.",
+  "follow_ups": ""
+}
+
+Example 3:
+Input: "pay electricity bill by Friday"
+Output: bucket = "things"
+{
+  "task": "Pay electricity bill",
+  "status": "Open",
+  "due": "Friday",
+  "next_action": "Pay the bill"
 }
 
 User message:
