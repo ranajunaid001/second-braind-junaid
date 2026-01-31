@@ -99,8 +99,8 @@ def fuzzy_match_name(name1: str, name2: str) -> float:
     return matches / longer
 
 
-def find_similar_person(name: str) -> dict:
-    """Find a person with similar name. Returns best match or None."""
+def find_similar_person(name: str) -> list:
+    """Find all people with similar name. Returns list of matches."""
     try:
         client = get_sheets_client()
         spreadsheet = client.open_by_key(SHEET_ID)
@@ -108,17 +108,15 @@ def find_similar_person(name: str) -> dict:
         all_rows = sheet.get_all_values()
         
         name_lower = name.lower().strip()
-        best_match = None
-        best_score = 0.0
+        matches = []
         
         for idx, row in enumerate(all_rows[1:], start=2):
             if len(row) >= 1 and row[-1] == "TRUE":
                 existing_name = row[0]
                 score = fuzzy_match_name(name, existing_name)
                 
-                if score > best_score and score >= 0.8:
-                    best_score = score
-                    best_match = {
+                if score >= 0.8:
+                    matches.append({
                         "row_idx": idx,
                         "name": existing_name,
                         "context": row[1] if len(row) > 1 else "",
@@ -126,12 +124,12 @@ def find_similar_person(name: str) -> dict:
                         "follow_ups": row[3] if len(row) > 3 else "",
                         "last_touched": row[4] if len(row) > 4 else "",
                         "score": score
-                    }
+                    })
         
-        return best_match
+        return matches
     except Exception as e:
         print(f"Memory error (find similar): {e}")
-        return None
+        return []
 
 
 def append_to_person(row_idx: int, new_text: str, fields: dict, message_id: int) -> bool:
