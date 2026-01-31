@@ -6,7 +6,7 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from flask import Flask, jsonify
 
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENAI_API_KEY
-from classifier import classify, needs_confirmation, format_person_info
+from classifier import classify, needs_confirmation, format_person_info, semantic_person_match
 from memory import save_entry, fix_entry, get_items, get_digest_data, find_person, find_similar_person, append_to_person, extract_identifier
 from prompts import DIGEST_PROMPT, get_top_items_prompt
 from openai import OpenAI
@@ -396,28 +396,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ----- CHECK FOR SIMILAR PERSON (MERGE PROMPT) -----
     if classification["bucket"] == "people":
         name = classification["fields"].get("name", "")
+        new_context = classification["fields"].get("context", "")
+        
         if name:
             similar = find_similar_person(name)
             
-            # If found a similar person (but not exact match that save_entry handles)
-            if similar and similar["score"] < 1.0:
-                identifier = extract_identifier(similar["context"])
+            if similar:
+                # Use GPT to check if same person
+                match_result = semantic_person_match(
+                    similar["name"],
+                    similar["context"],
+                    name,
+                    new_context
+                )
                 
-                context.user_data["pending_merge"] = {
-                    "original_text": user_message,
-                    "classification": classification,
-                    "message_id": message_id,
-                    "existing_person": similar
-                }
+                if match_result == "SAME":
+                    # Definitely same person — auto-merge
+                    success = append_to_person(
+                        similar["row_idx"],
+                        user_message,
+                        classification["fields"],
+                        message_id
+                    )
+                    if success:
+                        reply = f"Added to {similar['name']}."
+                    else:
+                        reply = "❌ Error updating. Please try again."
+                    await update.message.reply_text(reply)
+                    return
                 
-                # Build short question
-                if identifier:
-                    reply = f"{similar['name']} {identifier}?"
+                elif match_result == "DIFFERENT":
+                    # Definitely different — save as new, no prompt
+                    pass  # Fall through to normal save
+                
                 else:
-                    reply = f"{similar['name']}?"
-                
-                await update.message.reply_text(reply)
-                return
+                    # LIKELY_SAME or LIKELY_DIFFERENT — ask user
+                    identifier = extract_identifier(similar["context"])
+                    
+                    context.user_data["pending_merge"] = {
+                        "original_text": user_message,
+                        "classification": classification,
+                        "message_id": message_id,
+                        "existing_person": similar
+                    }
+                    
+                    # Build short question
+                    if identifier:
+                        reply = f"{similar['name']} {identifier}?"
+                    else:
+                        reply = f"{similar['name']}?"
+                    
+                    await update.message.reply_text(reply)
+                    return
     
     # Save to memory
     success = save_entry(user_message, classification, message_id)
