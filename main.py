@@ -1,148 +1,491 @@
+import json
+import threading
+import asyncio
+from telegram import Update, Bot
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from flask import Flask, jsonify
+
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENAI_API_KEY
+from classifier import classify, needs_confirmation, format_person_info
+from memory import save_entry, fix_entry, get_items, get_digest_data, find_person, find_similar_person, append_to_person, extract_identifier
+from prompts import DIGEST_PROMPT, get_top_items_prompt
+from openai import OpenAI
+
+# Flask app for cron endpoints
+flask_app = Flask(__name__)
+
+# OpenAI client for digest generation
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
 # =============================================================================
-# PROMPTS.PY - All LLM prompts in one place
-# Edit this file to improve AI behavior
+# SHORTCUTS - for fix and top commands
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# CLASSIFIER PROMPT
-# Used to classify incoming messages into buckets
-# -----------------------------------------------------------------------------
-
-CLASSIFIER_PROMPT = """You are a classifier for a personal second brain.
-
-Classify the user message into exactly one bucket:
-- people (contacts, relationships, info about specific people - names, facts, observations, cues, anything about a person)
-- ideas (product ideas, things to build, concepts to explore)
-- interviews (job opportunities, leads, applications, interview prep)
-- things (bills, appointments, errands, daily tasks)
-- linkedin (content ideas for LinkedIn posts)
-
-Return JSON ONLY. No markdown. No extra text.
-
-{
-  "bucket": "people|ideas|interviews|things|linkedin",
-  "confidence": 0.0-1.0,
-  "fields": {}
+BUCKET_SHORTCUTS = {
+    "ppl": "people", "p": "people", "people": "people",
+    "idea": "ideas", "ideas": "ideas", "i": "ideas",
+    "int": "interviews", "interview": "interviews", "interviews": "interviews",
+    "things": "things", "thing": "things", "t": "things",
+    "li": "linkedin", "ln": "linkedin", "linkedin": "linkedin", "l": "linkedin"
 }
 
-The "fields" object depends on the bucket:
+TABLE_SHORTCUTS = {
+    "ppl": "People", "p": "People", "people": "People",
+    "idea": "Ideas", "ideas": "Ideas", "i": "Ideas",
+    "int": "Interviews", "interview": "Interviews", "interviews": "Interviews",
+    "things": "Things", "thing": "Things", "t": "Things",
+    "li": "LinkedIn", "ln": "LinkedIn", "linkedin": "LinkedIn", "l": "LinkedIn",
+    "all": "all"
+}
 
-For "people":
-{"name": "person's name (REQUIRED - extract from message)", "context": "who they are/how you know them", "follow_ups": "any action item mentioned, or empty"}
 
-For "ideas":
-{"idea": "short title", "one_liner": "one sentence description", "notes": "any extra details"}
+# =============================================================================
+# CONFIRMATION PARSING
+# =============================================================================
 
-For "interviews":
-{"company": "company name", "role": "job role if mentioned", "status": "Lead|Applied|Scheduled|Completed", "next_step": "what to do next", "date": "date if mentioned or empty"}
+AFFIRMATIVE = [
+    # English basics
+    "y", "yes", "yea", "yeah", "yep", "yup", "ya", "ye", "ys",
+    # Casual
+    "mhm", "mm", "mmhm", "uh huh", "uhuh", "sure", "ok", "okay", "k", "kk",
+    # Confirming
+    "correct", "right", "exactly", "indeed", "absolutely", "definitely", "certainly", "totally", "for sure", "of course",
+    # That's the one
+    "that's him", "thats him", "that's her", "thats her", "that's them", "thats them",
+    "that's the one", "thats the one", "the one", "that one", "this one",
+    "him", "her", "them", "same", "same one", "same person", "same guy", "same dude",
+    # Bingo
+    "bingo", "yessir", "yes sir", "yesss", "yass", "yasss", "yaaas",
+    # Affirmative slang
+    "bet", "word", "facts", "true", "tru", "aight", "ight", "fosho", "fo sho",
+    # Short confirms
+    "si", "oui", "ja", "hai", "da",
+    # Emojis
+    "👍", "✅", "👌", "🙌", "💯", "✔", "☑",
+    # Typos
+    "yse", "yess", "yea h", "yeap", "yep!", "yes!", "ya!", "yeah!"
+]
 
-For "things":
-{"task": "short title", "status": "Open", "due": "date if mentioned or empty", "next_action": "concrete next step"}
+NEGATIVE = [
+    # English basics
+    "n", "no", "nah", "nope", "nop", "na", "nay",
+    # Casual
+    "not really", "not him", "not her", "not them", "not that one",
+    "wrong", "wrong one", "wrong person", "wrong guy",
+    # Different
+    "different", "different one", "different person", "different guy",
+    "another", "another one", "another person", "another guy",
+    # New
+    "new", "new one", "new person", "create new", "make new", "add new",
+    # Nope variations
+    "nuh uh", "nuhuh", "nu uh", "negative", "negatory",
+    # Slang
+    "cap", "nada", "no way", "hell no", "heck no",
+    # Emojis
+    "👎", "❌", "✖", "🚫",
+    # Typos
+    "ni", "np", "noo", "nooo", "nope!"
+]
 
-For "linkedin":
-{"idea": "post topic or hook", "notes": "the full story or details", "status": "Draft"}
 
-IMPORTANT RULES:
-1. If message mentions a person's name + any info about them → ALWAYS "people"
-2. If message contains "draft" → ALWAYS "linkedin"
-3. "call someone", "follow up with someone" → "people" (it's about the person)
-4. "pay bill", "buy groceries", "schedule appointment" → "things"
-5. confidence 0.9+ = very sure, 0.7-0.89 = likely, 0.6-0.69 = weak, <0.6 = uncertain
-
-User message:
-"""
-
-# -----------------------------------------------------------------------------
-# EXTRACT FIELDS PROMPT
-# Used when force rules apply (e.g., "draft" → linkedin)
-# -----------------------------------------------------------------------------
-
-def get_extract_fields_prompt(bucket: str, message: str) -> str:
-    """Generate prompt to extract fields for a specific bucket."""
+def parse_confirmation(reply: str) -> str:
+    """Parse user reply to merge confirmation. Returns CONFIRM, DENY, or OTHER."""
+    reply = reply.lower().strip()
     
-    field_schemas = {
-        "linkedin": '{"idea": "post topic", "notes": "full content", "status": "Draft"}',
-        "people": '{"name": "person name", "context": "who they are", "follow_ups": "any action"}',
-        "ideas": '{"idea": "short title", "one_liner": "one sentence", "notes": "details"}',
-        "interviews": '{"company": "company name", "role": "job role", "status": "Lead", "next_step": "action", "date": ""}',
-        "things": '{"task": "short title", "status": "Open", "due": "", "next_action": "concrete step"}'
-    }
+    # Check exact matches first
+    if reply in AFFIRMATIVE:
+        return "CONFIRM"
+    if reply in NEGATIVE:
+        return "DENY"
     
-    schema = field_schemas.get(bucket, '{}')
+    # Check if any affirmative phrase is in the reply
+    for phrase in AFFIRMATIVE:
+        if len(phrase) > 2 and phrase in reply:  # Only check phrases, not single chars
+            return "CONFIRM"
     
-    return f"""Extract fields from this message for the "{bucket}" category.
-
-Return JSON ONLY:
-{schema}
-
-Message: {message}"""
-
-# -----------------------------------------------------------------------------
-# DIGEST PROMPT
-# Used for daily digest - top 3 actions
-# -----------------------------------------------------------------------------
-
-DIGEST_PROMPT = """Generate a daily digest. Be extremely concise. No fluff.
-
-Rules:
-- Max 3 bullet points
-- Each bullet = one specific action (verb + what)
-- Include company name or person name if relevant
-- No greetings, no sign-offs
-
-Example format:
-• Follow up with Stripe recruiter about PM role
-• Pay electricity bill (due Friday)
-• Call mom re: birthday plans
-
-Data:
-"""
-
-# -----------------------------------------------------------------------------
-# TOP ITEMS PROMPT
-# Used for "top people", "top admin", etc.
-# -----------------------------------------------------------------------------
-
-def get_top_items_prompt(table_name: str, items: list) -> str:
-    """Generate prompt to format top items from a table."""
-    import json
+    # Check if any negative phrase is in the reply
+    for phrase in NEGATIVE:
+        if len(phrase) > 2 and phrase in reply:
+            return "DENY"
     
-    return f"""Format these {table_name} items as a short bullet list. Max 5 items.
-Each bullet should be one line, actionable if possible.
-No headers, no fluff.
+    return "OTHER"
 
-Data:
-{json.dumps(items[:5])}"""
 
-# -----------------------------------------------------------------------------
-# WEEKLY REVIEW PROMPT (for future use)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# DIGEST FUNCTIONS
+# =============================================================================
 
-WEEKLY_REVIEW_PROMPT = """Write a weekly review under 250 words.
+def generate_digest(data):
+    """Use ChatGPT to generate daily digest."""
+    prompt = DIGEST_PROMPT + json.dumps(data, indent=2)
+    
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error generating digest: {e}")
+        return None
 
-Include:
-1) What moved forward this week (2-4 bullets)
-2) What is stuck and why (2 bullets)
-3) Top 3 priorities for next week (3 bullets)
-4) One pattern you notice (1 sentence)
 
-Use only the data provided. Be specific.
+def format_top_items(table_name, items):
+    """Format items for Telegram message."""
+    if not items:
+        return f"No active items in {table_name}."
+    
+    prompt = get_top_items_prompt(table_name, items)
+    
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error formatting items: {e}")
+        result = f"Top {table_name}:\n"
+        for item in items[:5]:
+            result += f"• {item[0]}\n"
+        return result
 
-Data:
-"""
 
-# -----------------------------------------------------------------------------
-# MISCLASSIFICATION REPORT PROMPT (for future use)
-# -----------------------------------------------------------------------------
+async def send_digest_async():
+    """Send digest via Telegram."""
+    data = get_digest_data()
+    if not data:
+        return False, "Could not fetch data"
+    
+    if not data["interviews"] and not data["things"] and not data["people"]:
+        message = "📋 Daily Digest\n\nNo pending actions. You're all caught up! 🎉"
+    else:
+        message = generate_digest(data)
+        if not message:
+            return False, "Could not generate digest"
+    
+    try:
+        bot = Bot(token=TELEGRAM_TOKEN)
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        return True, "Digest sent"
+    except Exception as e:
+        print(f"Error sending digest: {e}")
+        return False, str(e)
 
-MISCLASSIFICATION_PROMPT = """Analyze these classification corrections and identify patterns.
 
-For each pattern, explain:
-1. What type of message was misclassified
-2. What it was classified as vs what it should have been
-3. How to improve the classification
+def send_digest_sync():
+    """Synchronous wrapper for sending digest."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(send_digest_async())
+    loop.close()
+    return result
 
-Be concise. Max 100 words.
 
-Corrections data:
-"""
+# =============================================================================
+# FLASK ENDPOINTS
+# =============================================================================
+
+@flask_app.route("/digest", methods=["GET", "POST"])
+def digest_endpoint():
+    """Endpoint for cron job to trigger daily digest."""
+    success, message = send_digest_sync()
+    if success:
+        return jsonify({"status": "ok", "message": message}), 200
+    else:
+        return jsonify({"status": "error", "message": message}), 500
+
+
+@flask_app.route("/health", methods=["GET"])
+def health_check():
+    """Health check endpoint."""
+    return jsonify({"status": "ok"}), 200
+
+
+def run_flask():
+    """Run Flask in a separate thread."""
+    import os
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port)
+
+
+# =============================================================================
+# TELEGRAM MESSAGE HANDLER
+# =============================================================================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Main message handler - routes all incoming messages."""
+    user_message = update.message.text.strip()
+    user_message_lower = user_message.lower()
+    message_id = update.message.message_id
+    
+    # ----- COMMAND: who <name> -----
+    if user_message_lower.startswith("who "):
+        name = user_message[4:].strip()
+        # Strip punctuation from search
+        name = name.rstrip('?!.,;:')
+        matches = find_person(name)
+        
+        if not matches:
+            reply = f"No one found matching '{name}'."
+        elif len(matches) == 1:
+            reply = format_person_info(matches[0])
+        else:
+            reply = f"Found {len(matches)} people:\n\n"
+            for m in matches:
+                reply += f"• {m['name']}"
+                if m.get('context'):
+                    reply += f" ({m['context'][:30]}...)"
+                reply += "\n"
+            reply += "\nBe more specific."
+        
+        await update.message.reply_text(reply)
+        return
+    
+    # ----- COMMAND: top <table> -----
+    if user_message_lower.startswith("top"):
+        table_request = user_message_lower.replace("top", "").strip()
+        table_name = TABLE_SHORTCUTS.get(table_request)
+        
+        if table_name == "all":
+            # Send full digest directly (async)
+            data = get_digest_data()
+            if not data:
+                await update.message.reply_text("❌ Could not fetch data.")
+                return
+            
+            if not data["interviews"] and not data["things"] and not data["people"]:
+                reply = "📋 Daily Digest\n\nNo pending actions. You're all caught up! 🎉"
+            else:
+                reply = generate_digest(data)
+                if not reply:
+                    await update.message.reply_text("❌ Could not generate digest.")
+                    return
+            
+            await update.message.reply_text(reply)
+            return
+        elif table_name:
+            items = get_items(table_name)
+            reply = format_top_items(table_name, items)
+            await update.message.reply_text(reply)
+            return
+        else:
+            await update.message.reply_text("❌ Unknown table. Use: top people / admin / interviews / ideas / linkedin / all")
+            return
+    
+    # ----- COMMAND: fix <bucket> -----
+    if user_message_lower.startswith("fix") or user_message_lower.startswith("fx"):
+        new_bucket = user_message_lower.replace("fix:", "").replace("fix", "").replace("fx:", "").replace("fx", "").strip()
+        new_bucket = BUCKET_SHORTCUTS.get(new_bucket, new_bucket)
+        
+        if new_bucket in ["people", "ideas", "interviews", "things", "linkedin"]:
+            if "last_message" in context.user_data:
+                last = context.user_data["last_message"]
+                success, old_bucket = fix_entry(
+                    last["message_id"], 
+                    new_bucket, 
+                    last["original_text"],
+                    last["classification"]
+                )
+                
+                if success:
+                    reply = f"✓ Fixed. Moved from {old_bucket} to {new_bucket.capitalize()}."
+                else:
+                    reply = "❌ Could not find the entry to fix."
+            else:
+                reply = "❌ No recent message to fix."
+        else:
+            reply = "❌ Invalid category. Use: fix people / fix ideas / fix interviews / fix things / fix linkedin"
+        
+        await update.message.reply_text(reply)
+        return
+    
+    # ----- LOW CONFIDENCE CORRECTION -----
+    if user_message_lower in ["people", "ideas", "interviews", "things", "linkedin"]:
+        if "pending_message" in context.user_data:
+            pending = context.user_data["pending_message"]
+            pending["classification"]["bucket"] = user_message_lower
+            pending["classification"]["confidence"] = 1.0
+            
+            success = save_entry(pending["original_text"], pending["classification"], pending["message_id"])
+            
+            if success:
+                fields = pending["classification"]["fields"]
+                title = fields.get("name") or fields.get("idea") or fields.get("company") or fields.get("task") or "Item"
+                reply = f"✓ Corrected and filed as: {user_message_lower.capitalize()}\nTitle: {title}"
+                
+                context.user_data["last_message"] = {
+                    "message_id": pending["message_id"],
+                    "original_text": pending["original_text"],
+                    "classification": pending["classification"]
+                }
+            else:
+                reply = "❌ Error saving. Please try again."
+            
+            del context.user_data["pending_message"]
+            await update.message.reply_text(reply)
+            return
+    
+    # ----- MERGE CONFIRMATION -----
+    if "pending_merge" in context.user_data:
+        confirmation = parse_confirmation(user_message)
+        pending = context.user_data["pending_merge"]
+        
+        if confirmation == "CONFIRM":
+            # Append to existing person
+            success = append_to_person(
+                pending["existing_person"]["row_idx"],
+                pending["original_text"],
+                pending["classification"]["fields"],
+                pending["message_id"]
+            )
+            
+            if success:
+                reply = f"Added to {pending['existing_person']['name']}."
+            else:
+                reply = "❌ Error updating. Please try again."
+            
+            del context.user_data["pending_merge"]
+            await update.message.reply_text(reply)
+            return
+        
+        elif confirmation == "DENY":
+            # Save as new person
+            success = save_entry(pending["original_text"], pending["classification"], pending["message_id"], force_new=True)
+            
+            if success:
+                name = pending["classification"]["fields"].get("name", "")
+                reply = f"Got it — new {name} saved."
+            else:
+                reply = "❌ Error saving. Please try again."
+            
+            del context.user_data["pending_merge"]
+            await update.message.reply_text(reply)
+            return
+        
+        else:
+            # OTHER - user sent something unrelated, clear pending and process as new message
+            del context.user_data["pending_merge"]
+            # Fall through to normal message processing
+    
+    # ----- NORMAL MESSAGE: CLASSIFY AND SAVE -----
+    classification = classify(user_message)
+    
+    # Check if needs confirmation
+    if needs_confirmation(classification["confidence"]):
+        context.user_data["pending_message"] = {
+            "original_text": user_message,
+            "classification": classification,
+            "message_id": message_id
+        }
+        
+        fields = classification["fields"]
+        title = fields.get("name") or fields.get("idea") or fields.get("company") or fields.get("task") or user_message[:30]
+        
+        reply = f"🤔 Not sure about this one.\n\n"
+        reply += f"Message: \"{user_message[:50]}{'...' if len(user_message) > 50 else ''}\"\n"
+        reply += f"My guess: {classification['bucket'].capitalize()} ({int(classification['confidence'] * 100)}%)\n\n"
+        reply += "Reply with the correct category:\n"
+        reply += "• people\n• ideas\n• interviews\n• things\n• linkedin"
+        
+        await update.message.reply_text(reply)
+        return
+    
+    # ----- CHECK FOR SIMILAR PERSON (MERGE PROMPT) -----
+    if classification["bucket"] == "people":
+        name = classification["fields"].get("name", "")
+        if name:
+            similar = find_similar_person(name)
+            
+            # If found a similar person (but not exact match that save_entry handles)
+            if similar and similar["score"] < 1.0:
+                identifier = extract_identifier(similar["context"])
+                
+                context.user_data["pending_merge"] = {
+                    "original_text": user_message,
+                    "classification": classification,
+                    "message_id": message_id,
+                    "existing_person": similar
+                }
+                
+                # Build short question
+                if identifier:
+                    reply = f"{similar['name']} {identifier}?"
+                else:
+                    reply = f"{similar['name']}?"
+                
+                await update.message.reply_text(reply)
+                return
+    
+    # Save to memory
+    success = save_entry(user_message, classification, message_id)
+    
+    if success:
+        confidence_pct = int(classification["confidence"] * 100)
+        fields = classification["fields"]
+        bucket = classification['bucket'].capitalize()
+        title = fields.get("name") or fields.get("idea") or fields.get("company") or fields.get("task") or "Item"
+        
+        # Build conversational reply
+        reply = f"Got it — saved to {bucket}.\n\n"
+        reply += f"\"{title}\""
+        
+        # Add relevant details based on bucket
+        if classification['bucket'] == 'things' and fields.get('due'):
+            reply += f"\nDue: {fields.get('due')}"
+        elif classification['bucket'] == 'people' and fields.get('context'):
+            reply += f"\n{fields.get('context')}"
+        elif classification['bucket'] == 'interviews' and fields.get('company'):
+            if fields.get('role'):
+                reply += f" — {fields.get('role')}"
+        
+        reply += f"\n\nWrong? Say 'fix {classification['bucket']}'"
+        
+        context.user_data["last_message"] = {
+            "message_id": message_id,
+            "original_text": user_message,
+            "classification": classification
+        }
+    else:
+        reply = "❌ Error saving. Please try again."
+    
+    await update.message.reply_text(reply)
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+def main():
+    import os
+    
+    # Check required env vars
+    missing = []
+    if not TELEGRAM_TOKEN: missing.append("TELEGRAM_TOKEN")
+    if not os.environ.get("OPENAI_API_KEY"): missing.append("OPENAI_API_KEY")
+    if not os.environ.get("GOOGLE_SHEETS_CREDS"): missing.append("GOOGLE_SHEETS_CREDS")
+    if not os.environ.get("SHEET_ID"): missing.append("SHEET_ID")
+    if not TELEGRAM_CHAT_ID: missing.append("TELEGRAM_CHAT_ID")
+    
+    if missing:
+        print(f"ERROR: Missing environment variables: {', '.join(missing)}")
+        return
+    
+    # Start Flask in background thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print("Flask server started for cron endpoints...")
+    
+    # Start Telegram bot
+    print("Starting bot...")
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("Bot is running. Listening for messages...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
