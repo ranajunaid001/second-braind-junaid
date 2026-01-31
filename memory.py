@@ -15,7 +15,169 @@ def get_sheets_client():
     return gspread.authorize(creds)
 
 
-def save_entry(captured_text: str, classification: dict, message_id: int) -> bool:
+def extract_identifier(context: str) -> str:
+    """Extract the most identifying detail from context."""
+    if not context:
+        return ""
+    
+    context_lower = context.lower()
+    
+    # Check for company/workplace
+    work_keywords = ["works at", "at ", "from ", "@ "]
+    for keyword in work_keywords:
+        if keyword in context_lower:
+            idx = context_lower.find(keyword)
+            rest = context[idx + len(keyword):].strip()
+            # Get first word or two (company name)
+            words = rest.split()
+            if words:
+                company = words[0].rstrip('.,;:')
+                return f"from {company}"
+    
+    # Check for relationship
+    relation_keywords = ["roommate", "friend", "colleague", "brother", "sister", "wife", "husband", "partner", "boss", "manager", "coworker"]
+    for rel in relation_keywords:
+        if rel in context_lower:
+            return f"your {rel}"
+    
+    # Check for location
+    location_keywords = ["lives in", "in ", "based in"]
+    for keyword in location_keywords:
+        if keyword in context_lower:
+            idx = context_lower.find(keyword)
+            rest = context[idx + len(keyword):].strip()
+            words = rest.split()
+            if words:
+                location = words[0].rstrip('.,;:')
+                return f"in {location}"
+    
+    # Check for event/meeting context
+    event_keywords = ["met at", "from the", "at the"]
+    for keyword in event_keywords:
+        if keyword in context_lower:
+            idx = context_lower.find(keyword)
+            rest = context[idx + len(keyword):].strip()
+            words = rest.split()[:3]
+            if words:
+                event = " ".join(words).rstrip('.,;:')
+                return f"from the {event}"
+    
+    # Fallback: first few words of context
+    words = context.split()[:3]
+    if words:
+        return " ".join(words).rstrip('.,;:')
+    
+    return ""
+
+
+def fuzzy_match_name(name1: str, name2: str) -> float:
+    """Calculate similarity between two names. Returns 0.0 to 1.0."""
+    n1 = name1.lower().strip()
+    n2 = name2.lower().strip()
+    
+    # Exact match
+    if n1 == n2:
+        return 1.0
+    
+    # One contains the other (e.g., "John" in "John Smith")
+    if n1 in n2 or n2 in n1:
+        return 0.9
+    
+    # First name match
+    n1_first = n1.split()[0] if n1.split() else n1
+    n2_first = n2.split()[0] if n2.split() else n2
+    if n1_first == n2_first:
+        return 0.85
+    
+    # Simple character-based similarity
+    shorter = min(len(n1), len(n2))
+    longer = max(len(n1), len(n2))
+    if longer == 0:
+        return 0.0
+    
+    matches = sum(c1 == c2 for c1, c2 in zip(n1, n2))
+    return matches / longer
+
+
+def find_similar_person(name: str) -> dict:
+    """Find a person with similar name. Returns best match or None."""
+    try:
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SHEET_ID)
+        sheet = spreadsheet.worksheet("People")
+        all_rows = sheet.get_all_values()
+        
+        name_lower = name.lower().strip()
+        best_match = None
+        best_score = 0.0
+        
+        for idx, row in enumerate(all_rows[1:], start=2):
+            if len(row) >= 1 and row[-1] == "TRUE":
+                existing_name = row[0]
+                score = fuzzy_match_name(name, existing_name)
+                
+                if score > best_score and score >= 0.8:
+                    best_score = score
+                    best_match = {
+                        "row_idx": idx,
+                        "name": existing_name,
+                        "context": row[1] if len(row) > 1 else "",
+                        "notes": row[2] if len(row) > 2 else "",
+                        "follow_ups": row[3] if len(row) > 3 else "",
+                        "last_touched": row[4] if len(row) > 4 else "",
+                        "score": score
+                    }
+        
+        return best_match
+    except Exception as e:
+        print(f"Memory error (find similar): {e}")
+        return None
+
+
+def append_to_person(row_idx: int, new_text: str, fields: dict, message_id: int) -> bool:
+    """Append new note to existing person."""
+    try:
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SHEET_ID)
+        sheet = spreadsheet.worksheet("People")
+        
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        note_entry = f"[{timestamp[:10]}] {new_text}"
+        
+        # Get current row
+        all_rows = sheet.get_all_values()
+        current_row = all_rows[row_idx - 1]
+        
+        # Append to notes
+        current_notes = current_row[2] if len(current_row) > 2 else ""
+        new_notes = current_notes + " • " + note_entry if current_notes else note_entry
+        
+        # Update notes (column 3), last touched (column 5), message_id (column 6)
+        sheet.update_cell(row_idx, 3, new_notes)
+        sheet.update_cell(row_idx, 5, timestamp)
+        sheet.update_cell(row_idx, 6, message_id)
+        
+        # Update follow-ups if provided
+        if fields.get("follow_ups"):
+            current_followups = current_row[3] if len(current_row) > 3 else ""
+            new_followups = current_followups + " | " + fields.get("follow_ups") if current_followups else fields.get("follow_ups")
+            sheet.update_cell(row_idx, 4, new_followups)
+        
+        # Update context if new info provided
+        if fields.get("context"):
+            current_context = current_row[1] if len(current_row) > 1 else ""
+            if fields.get("context").lower() not in current_context.lower():
+                new_context = current_context + ", " + fields.get("context") if current_context else fields.get("context")
+                sheet.update_cell(row_idx, 2, new_context)
+        
+        print(f"Appended to existing person at row {row_idx}")
+        return True
+    except Exception as e:
+        print(f"Memory error (append person): {e}")
+        return False
+
+
+def save_entry(captured_text: str, classification: dict, message_id: int, force_new: bool = False) -> bool:
     """Save the classified message to the appropriate Google Sheet tab."""
     try:
         client = get_sheets_client()
@@ -27,8 +189,8 @@ def save_entry(captured_text: str, classification: dict, message_id: int) -> boo
         
         # Save to the appropriate sheet based on bucket
         if bucket == "people":
-            # Check if person already exists
-            saved = save_or_update_person(spreadsheet, fields, captured_text, message_id, timestamp)
+            # Check if person already exists (unless force_new)
+            saved = save_or_update_person(spreadsheet, fields, captured_text, message_id, timestamp, force_new)
             if saved:
                 log_to_inbox(spreadsheet, fields.get("name", ""), captured_text, bucket, classification["confidence"], timestamp, message_id)
             return saved
@@ -87,7 +249,7 @@ def save_entry(captured_text: str, classification: dict, message_id: int) -> boo
         return False
 
 
-def save_or_update_person(spreadsheet, fields, captured_text, message_id, timestamp) -> bool:
+def save_or_update_person(spreadsheet, fields, captured_text, message_id, timestamp, force_new: bool = False) -> bool:
     """Save new person or update existing person's notes."""
     try:
         sheet = spreadsheet.worksheet("People")
@@ -97,12 +259,13 @@ def save_or_update_person(spreadsheet, fields, captured_text, message_id, timest
         if not name:
             return False
         
-        # Search for existing person (case-insensitive)
+        # Search for existing person (exact match, case-insensitive) unless force_new
         found_idx = None
-        for idx, row in enumerate(all_rows[1:], start=2):  # Skip header
-            if len(row) >= 1 and row[0].lower() == name.lower() and row[-1] == "TRUE":
-                found_idx = idx
-                break
+        if not force_new:
+            for idx, row in enumerate(all_rows[1:], start=2):  # Skip header
+                if len(row) >= 1 and row[0].lower() == name.lower() and row[-1] == "TRUE":
+                    found_idx = idx
+                    break
         
         note_entry = f"[{timestamp[:10]}] {captured_text}"
         
@@ -111,10 +274,10 @@ def save_or_update_person(spreadsheet, fields, captured_text, message_id, timest
             current_notes = all_rows[found_idx - 1][2] if len(all_rows[found_idx - 1]) > 2 else ""
             new_notes = current_notes + " • " + note_entry if current_notes else note_entry
             
-            # Update notes (column 3), last touched (column 4), message_id (column 5)
+            # Update notes (column 3), last touched (column 5), message_id (column 6)
             sheet.update_cell(found_idx, 3, new_notes)
-            sheet.update_cell(found_idx, 4, timestamp)
-            sheet.update_cell(found_idx, 5, message_id)
+            sheet.update_cell(found_idx, 5, timestamp)
+            sheet.update_cell(found_idx, 6, message_id)
             
             # Update follow-ups if provided
             if fields.get("follow_ups"):
