@@ -81,6 +81,8 @@ NEGATIVE = [
     "nuh uh", "nuhuh", "nu uh", "negative", "negatory",
     # Slang
     "cap", "nada", "no way", "hell no", "heck no",
+    # Dismissive
+    "nothing", "nevermind", "never mind", "forget it", "skip", "none",
     # Emojis
     "👎", "❌", "✖", "🚫",
     # Typos
@@ -444,22 +446,83 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ----- MERGE CONFIRMATION -----
     if "pending_merge" in context.user_data:
-        confirmation = parse_confirmation(user_message)
         pending = context.user_data["pending_merge"]
+        all_matches = pending.get("all_matches", [])
+        
+        # Check if user selected a number (for multiple matches)
+        if user_message.strip().isdigit():
+            idx = int(user_message.strip()) - 1
+            if 0 <= idx < len(all_matches):
+                selected = all_matches[idx]
+                success = append_to_person(
+                    selected["row_idx"],
+                    pending["original_text"],
+                    pending["classification"]["fields"],
+                    pending["message_id"]
+                )
+                if success:
+                    reply = f"Added to {selected['name']}."
+                else:
+                    reply = "❌ Error updating. Please try again."
+                del context.user_data["pending_merge"]
+                await update.message.reply_text(reply)
+                return
+            else:
+                await update.message.reply_text(f"Pick a number between 1 and {len(all_matches)}")
+                return
+        
+        # Check if user typed an identifier to select (e.g., "google", "mckinsey")
+        user_lower = user_message.lower()
+        for match in all_matches:
+            identifier = extract_identifier(match.get("context", ""))
+            if identifier:
+                id_words = identifier.lower().replace("from ", "").replace("your ", "").split()
+                if any(word in user_lower for word in id_words if len(word) > 2):
+                    success = append_to_person(
+                        match["row_idx"],
+                        pending["original_text"],
+                        pending["classification"]["fields"],
+                        pending["message_id"]
+                    )
+                    if success:
+                        reply = f"Added to {match['name']}."
+                    else:
+                        reply = "❌ Error updating. Please try again."
+                    del context.user_data["pending_merge"]
+                    await update.message.reply_text(reply)
+                    return
+        
+        confirmation = parse_confirmation(user_message)
         
         if confirmation == "CONFIRM":
-            # Append to existing person
-            success = append_to_person(
-                pending["existing_person"]["row_idx"],
-                pending["original_text"],
-                pending["classification"]["fields"],
-                pending["message_id"]
-            )
-            
-            if success:
-                reply = f"Added to {pending['existing_person']['name']}."
+            # Single match confirmation
+            if pending.get("existing_person"):
+                success = append_to_person(
+                    pending["existing_person"]["row_idx"],
+                    pending["original_text"],
+                    pending["classification"]["fields"],
+                    pending["message_id"]
+                )
+                
+                if success:
+                    reply = f"Added to {pending['existing_person']['name']}."
+                else:
+                    reply = "❌ Error updating. Please try again."
+            elif len(all_matches) == 1:
+                success = append_to_person(
+                    all_matches[0]["row_idx"],
+                    pending["original_text"],
+                    pending["classification"]["fields"],
+                    pending["message_id"]
+                )
+                if success:
+                    reply = f"Added to {all_matches[0]['name']}."
+                else:
+                    reply = "❌ Error updating. Please try again."
             else:
-                reply = "❌ Error updating. Please try again."
+                reply = "Please pick a number or type an identifier."
+                await update.message.reply_text(reply)
+                return
             
             del context.user_data["pending_merge"]
             await update.message.reply_text(reply)
@@ -513,52 +576,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_context = classification["fields"].get("context", "")
         
         if name:
-            similar = find_similar_person(name)
+            similar_matches = find_similar_person(name)
             
-            if similar:
-                # Use GPT to check if same person
-                match_result = semantic_person_match(
-                    similar["name"],
-                    similar["context"],
-                    name,
-                    new_context
-                )
-                
-                if match_result == "SAME":
-                    # Definitely same person — auto-merge
-                    success = append_to_person(
-                        similar["row_idx"],
-                        user_message,
-                        classification["fields"],
-                        message_id
-                    )
-                    if success:
-                        reply = f"Added to {similar['name']}."
-                    else:
-                        reply = "❌ Error updating. Please try again."
-                    await update.message.reply_text(reply)
-                    return
-                
-                elif match_result == "DIFFERENT":
-                    # Definitely different — save as new, no prompt
-                    pass  # Fall through to normal save
-                
-                else:
-                    # LIKELY_SAME or LIKELY_DIFFERENT — ask user
+            if similar_matches:
+                if len(similar_matches) == 1:
+                    # Single match — ask to confirm
+                    similar = similar_matches[0]
                     identifier = extract_identifier(similar["context"])
                     
                     context.user_data["pending_merge"] = {
                         "original_text": user_message,
                         "classification": classification,
                         "message_id": message_id,
-                        "existing_person": similar
+                        "existing_person": similar,
+                        "all_matches": similar_matches
                     }
                     
-                    # Build short question
+                    # Clean format: "Same Alex? (works at Google)"
                     if identifier:
-                        reply = f"{similar['name']} {identifier}?"
+                        reply = f"Same {similar['name']}? ({identifier.replace('from ', '')})"
                     else:
-                        reply = f"{similar['name']}?"
+                        reply = f"Same {similar['name']}?"
+                    
+                    await update.message.reply_text(reply)
+                    return
+                
+                else:
+                    # Multiple matches — ask which one
+                    context.user_data["pending_merge"] = {
+                        "original_text": user_message,
+                        "classification": classification,
+                        "message_id": message_id,
+                        "existing_person": None,
+                        "all_matches": similar_matches
+                    }
+                    
+                    reply = "Which one?\n"
+                    for i, m in enumerate(similar_matches, 1):
+                        identifier = extract_identifier(m.get("context", ""))
+                        reply += f"{i}. {m['name']}"
+                        if identifier:
+                            reply += f", {identifier.replace('from ', '')}"
+                        reply += "\n"
+                    reply += f"\nOr say 'new' to create a new {name}."
                     
                     await update.message.reply_text(reply)
                     return
