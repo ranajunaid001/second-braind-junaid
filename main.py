@@ -6,7 +6,7 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from flask import Flask, jsonify
 
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENAI_API_KEY
-from classifier import classify, needs_confirmation, format_person_info, semantic_person_match, is_person_question, answer_person_question, search_people_by_criteria
+from classifier import classify, needs_confirmation, format_person_info, semantic_person_match, is_person_question, answer_person_question, extract_search_keywords, search_people_by_keywords, generate_search_answer
 from memory import save_entry, fix_entry, get_items, get_digest_data, find_person, find_similar_person, append_to_person, extract_identifier, get_all_people
 from prompts import DIGEST_PROMPT, get_top_items_prompt
 from openai import OpenAI
@@ -297,69 +297,73 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question_check = is_person_question(user_message)
     
     if question_check.get("is_question"):
-        name = question_check.get("name")
         query = question_check.get("query", user_message)
-        search_query = question_check.get("search_query")
         
-        # Search by criteria (e.g., "Who works at Google?")
-        if search_query and not name:
-            all_people = get_all_people()
-            if not all_people:
-                await update.message.reply_text("I don't have any people saved yet.")
-                return
+        # Get all people
+        all_people = get_all_people()
+        if not all_people:
+            await update.message.reply_text("I don't have any people saved yet.")
+            return
+        
+        # Extract keywords and search
+        keywords = extract_search_keywords(query)
+        
+        if keywords:
+            # Search by keywords
+            matches = search_people_by_keywords(all_people, keywords)
             
-            matching_names = search_people_by_criteria(all_people, search_query)
-            if not matching_names:
+            if matches:
+                # Generate answer using LLM
+                answer = generate_search_answer(query, matches)
+                await update.message.reply_text(answer)
+                return
+            else:
+                # No keyword matches - try to find a name in the query
+                # Check if any word in query matches a person's name
+                query_words = query.lower().split()
+                name_matches = []
+                for person in all_people:
+                    person_name_lower = person["name"].lower()
+                    for word in query_words:
+                        if word in person_name_lower or person_name_lower in word:
+                            name_matches.append(person)
+                            break
+                
+                if name_matches:
+                    if len(name_matches) == 1:
+                        answer = answer_person_question(name_matches[0], query)
+                        await update.message.reply_text(answer)
+                        return
+                    else:
+                        # Multiple matches - ask which one
+                        context.user_data["pending_person_question"] = {
+                            "matches": name_matches,
+                            "original_question": query
+                        }
+                        reply = "Which one?\n"
+                        for i, m in enumerate(name_matches, 1):
+                            identifier = extract_identifier(m.get("context", ""))
+                            reply += f"{i}. {m['name']}"
+                            if identifier:
+                                reply += f", {identifier}"
+                            reply += "\n"
+                        await update.message.reply_text(reply)
+                        return
+                
                 await update.message.reply_text("No one matches that criteria.")
                 return
+        else:
+            # No keywords extracted - might be a general question
+            # Try name matching as fallback
+            query_words = query.lower().split()
+            for person in all_people:
+                if person["name"].lower() in query.lower():
+                    answer = answer_person_question(person, query)
+                    await update.message.reply_text(answer)
+                    return
             
-            # Get full data for matching people
-            matches = [p for p in all_people if p["name"] in matching_names]
-            if len(matches) == 1:
-                answer = answer_person_question(matches[0], query)
-                await update.message.reply_text(answer)
-                return
-            else:
-                reply = "Found:\n"
-                for m in matches:
-                    identifier = extract_identifier(m.get("context", ""))
-                    reply += f"• {m['name']}"
-                    if identifier:
-                        reply += f", {identifier}"
-                    reply += "\n"
-                await update.message.reply_text(reply)
-                return
-        
-        # Search by name
-        if name:
-            matches = find_person(name)
-            
-            if not matches:
-                await update.message.reply_text(f"I don't have anyone named {name}.")
-                return
-            
-            if len(matches) == 1:
-                # Single match - answer directly, no confirmation needed
-                answer = answer_person_question(matches[0], query)
-                await update.message.reply_text(answer)
-                return
-            
-            else:
-                # Multiple matches - ask which one
-                context.user_data["pending_person_question"] = {
-                    "matches": matches,
-                    "original_question": query
-                }
-                
-                reply = "Which one?\n"
-                for i, m in enumerate(matches, 1):
-                    identifier = extract_identifier(m.get("context", ""))
-                    reply += f"{i}. {m['name']}"
-                    if identifier:
-                        reply += f", {identifier}"
-                    reply += "\n"
-                await update.message.reply_text(reply)
-                return
+            await update.message.reply_text("I'm not sure who you're asking about. Try including a name or specific detail.")
+            return
 
     if user_message_lower.startswith("top"):
         table_request = user_message_lower.replace("top", "").strip()
