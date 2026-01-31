@@ -14,13 +14,13 @@ Classify the user message into exactly one bucket:
 - people (contacts, relationships, info about specific people - names, facts, observations, cues, anything about a person)
 - ideas (product ideas, things to build, concepts to explore)
 - interviews (job opportunities, leads, applications, interview prep)
-- admin (bills, appointments, errands, daily tasks)
+- things (bills, appointments, errands, daily tasks)
 - linkedin (content ideas for LinkedIn posts)
 
 Return JSON ONLY. No markdown. No extra text.
 
 {
-  "bucket": "people|ideas|interviews|admin|linkedin",
+  "bucket": "people|ideas|interviews|things|linkedin",
   "confidence": 0.0-1.0,
   "fields": {}
 }
@@ -36,7 +36,7 @@ For "ideas":
 For "interviews":
 {"company": "company name", "role": "job role if mentioned", "status": "Lead|Applied|Scheduled|Completed", "next_step": "what to do next", "date": "date if mentioned or empty"}
 
-For "admin":
+For "things":
 {"task": "short title", "status": "Open", "due": "date if mentioned or empty", "next_action": "concrete next step"}
 
 For "linkedin":
@@ -46,7 +46,7 @@ IMPORTANT RULES:
 1. If message mentions a person's name + any info about them → ALWAYS "people"
 2. If message contains "draft" → ALWAYS "linkedin"
 3. "call someone", "follow up with someone" → "people" (it's about the person)
-4. "pay bill", "buy groceries", "schedule appointment" → "admin"
+4. "pay bill", "buy groceries", "schedule appointment" → "things"
 5. confidence 0.9+ = very sure, 0.7-0.89 = likely, 0.6-0.69 = weak, <0.6 = uncertain
 
 User message:
@@ -65,7 +65,7 @@ def get_extract_fields_prompt(bucket: str, message: str) -> str:
         "people": '{"name": "person name", "context": "who they are", "follow_ups": "any action"}',
         "ideas": '{"idea": "short title", "one_liner": "one sentence", "notes": "details"}',
         "interviews": '{"company": "company name", "role": "job role", "status": "Lead", "next_step": "action", "date": ""}',
-        "admin": '{"task": "short title", "status": "Open", "due": "", "next_action": "concrete step"}'
+        "things": '{"task": "short title", "status": "Open", "due": "", "next_action": "concrete step"}'
     }
     
     schema = field_schemas.get(bucket, '{}')
