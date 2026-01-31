@@ -323,7 +323,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     identifier = extract_identifier(m.get("context", ""))
                     reply += f"• {m['name']}"
                     if identifier:
-                        reply += f" {identifier}"
+                        reply += f", {identifier}"
                     reply += "\n"
                 await update.message.reply_text(reply)
                 return
@@ -337,18 +337,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             if len(matches) == 1:
-                # Single match - confirm first
-                identifier = extract_identifier(matches[0].get("context", ""))
-                context.user_data["pending_person_question"] = {
-                    "matches": matches,
-                    "original_question": query
-                }
-                
-                if identifier:
-                    reply = f"{matches[0]['name']} {identifier}?"
-                else:
-                    reply = f"{matches[0]['name']}?"
-                await update.message.reply_text(reply)
+                # Single match - answer directly, no confirmation needed
+                answer = answer_person_question(matches[0], query)
+                await update.message.reply_text(answer)
                 return
             
             else:
@@ -363,7 +354,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     identifier = extract_identifier(m.get("context", ""))
                     reply += f"{i}. {m['name']}"
                     if identifier:
-                        reply += f" {identifier}"
+                        reply += f", {identifier}"
                     reply += "\n"
                 await update.message.reply_text(reply)
                 return
@@ -480,7 +471,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if success:
                 name = pending["classification"]["fields"].get("name", "")
-                reply = f"Got it — new {name} saved."
+                reply = f"Got it, new {name} saved."
             else:
                 reply = "❌ Error saving. Please try again."
             
@@ -582,19 +573,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = fields.get("name") or fields.get("idea") or fields.get("company") or fields.get("task") or "Item"
         
         # Build conversational reply
-        reply = f"Got it — saved to {bucket}.\n\n"
-        reply += f"\"{title}\""
+        reply = f"Got it, saved to {bucket}.\n\n"
         
-        # Add relevant details based on bucket
-        if classification['bucket'] == 'things' and fields.get('due'):
-            reply += f"\nDue: {fields.get('due')}"
-        elif classification['bucket'] == 'people' and fields.get('context'):
-            reply += f"\n{fields.get('context')}"
-        elif classification['bucket'] == 'interviews' and fields.get('company'):
+        # Format based on bucket
+        if classification['bucket'] == 'people':
+            reply += f"{title}"
+            if fields.get('context'):
+                reply += f", {fields.get('context')}"
+        elif classification['bucket'] == 'things':
+            reply += f"{title}"
+            if fields.get('due'):
+                reply += f", due: {fields.get('due')}"
+        elif classification['bucket'] == 'ideas':
+            reply += f"{title}"
+            if fields.get('one_liner'):
+                reply += f", {fields.get('one_liner')}"
+        elif classification['bucket'] == 'interviews':
+            reply += f"{title}"
             if fields.get('role'):
-                reply += f" — {fields.get('role')}"
+                reply += f", {fields.get('role')}"
+        else:
+            reply += f"{title}"
         
-        reply += f"\n\nWrong? Say 'fix {classification['bucket']}'"
+        reply += f"\n\nWrong? Just say: ideas, things, etc."
         
         context.user_data["last_message"] = {
             "message_id": message_id,
