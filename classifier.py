@@ -83,6 +83,52 @@ def needs_confirmation(confidence: float) -> bool:
     return confidence <= CONFIDENCE_THRESHOLD
 
 
+def semantic_person_match(existing_name: str, existing_context: str, new_name: str, new_context: str) -> str:
+    """
+    Use GPT to determine if two person entries are the same person.
+    
+    Returns:
+    - "SAME" → definitely same person, auto-merge
+    - "LIKELY_SAME" → probably same, ask user
+    - "LIKELY_DIFFERENT" → probably different, ask user  
+    - "DIFFERENT" → definitely different, save as new
+    """
+    prompt = f"""You are comparing two entries to determine if they refer to the same person.
+
+EXISTING ENTRY:
+Name: {existing_name}
+Context: {existing_context}
+
+NEW ENTRY:
+Name: {new_name}
+Context: {new_context}
+
+Rules:
+- If names are clearly different people (e.g., "John" vs "Sarah") → DIFFERENT
+- If contexts directly conflict (e.g., "works at Google" vs "works at Apple") → LIKELY_DIFFERENT
+- If names match and new context adds info without conflict → LIKELY_SAME
+- If names match and contexts are identical or very similar → SAME
+- When in doubt, prefer LIKELY_SAME or LIKELY_DIFFERENT (let user decide)
+
+Return ONLY one word: SAME, LIKELY_SAME, LIKELY_DIFFERENT, or DIFFERENT"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1
+        )
+        result = response.choices[0].message.content.strip().upper()
+        
+        # Validate response
+        if result in ["SAME", "LIKELY_SAME", "LIKELY_DIFFERENT", "DIFFERENT"]:
+            return result
+        return "LIKELY_SAME"  # Default to asking user
+    except Exception as e:
+        print(f"Semantic match error: {e}")
+        return "LIKELY_SAME"  # Default to asking user
+
+
 def format_person_info(person: dict) -> str:
     """Format person info for display - clean and readable."""
     result = f"👤 {person['name']}\n"
