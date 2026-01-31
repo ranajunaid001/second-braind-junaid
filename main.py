@@ -7,7 +7,7 @@ from flask import Flask, jsonify
 
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENAI_API_KEY
 from classifier import classify, needs_confirmation, format_person_info
-from memory import save_entry, fix_entry, get_items, get_digest_data, find_person
+from memory import save_entry, fix_entry, get_items, get_digest_data, find_person, find_similar_person, append_to_person, extract_identifier
 from prompts import DIGEST_PROMPT, get_top_items_prompt
 from openai import OpenAI
 
@@ -37,6 +37,78 @@ TABLE_SHORTCUTS = {
     "li": "LinkedIn", "ln": "LinkedIn", "linkedin": "LinkedIn", "l": "LinkedIn",
     "all": "all"
 }
+
+
+# =============================================================================
+# CONFIRMATION PARSING
+# =============================================================================
+
+AFFIRMATIVE = [
+    # English basics
+    "y", "yes", "yea", "yeah", "yep", "yup", "ya", "ye", "ys",
+    # Casual
+    "mhm", "mm", "mmhm", "uh huh", "uhuh", "sure", "ok", "okay", "k", "kk",
+    # Confirming
+    "correct", "right", "exactly", "indeed", "absolutely", "definitely", "certainly", "totally", "for sure", "of course",
+    # That's the one
+    "that's him", "thats him", "that's her", "thats her", "that's them", "thats them",
+    "that's the one", "thats the one", "the one", "that one", "this one",
+    "him", "her", "them", "same", "same one", "same person", "same guy", "same dude",
+    # Bingo
+    "bingo", "yessir", "yes sir", "yesss", "yass", "yasss", "yaaas",
+    # Affirmative slang
+    "bet", "word", "facts", "true", "tru", "aight", "ight", "fosho", "fo sho",
+    # Short confirms
+    "si", "oui", "ja", "hai", "da",
+    # Emojis
+    "👍", "✅", "👌", "🙌", "💯", "✔", "☑",
+    # Typos
+    "yse", "yess", "yea h", "yeap", "yep!", "yes!", "ya!", "yeah!"
+]
+
+NEGATIVE = [
+    # English basics
+    "n", "no", "nah", "nope", "nop", "na", "nay",
+    # Casual
+    "not really", "not him", "not her", "not them", "not that one",
+    "wrong", "wrong one", "wrong person", "wrong guy",
+    # Different
+    "different", "different one", "different person", "different guy",
+    "another", "another one", "another person", "another guy",
+    # New
+    "new", "new one", "new person", "create new", "make new", "add new",
+    # Nope variations
+    "nuh uh", "nuhuh", "nu uh", "negative", "negatory",
+    # Slang
+    "cap", "nada", "no way", "hell no", "heck no",
+    # Emojis
+    "👎", "❌", "✖", "🚫",
+    # Typos
+    "ni", "np", "noo", "nooo", "nope!"
+]
+
+
+def parse_confirmation(reply: str) -> str:
+    """Parse user reply to merge confirmation. Returns CONFIRM, DENY, or OTHER."""
+    reply = reply.lower().strip()
+    
+    # Check exact matches first
+    if reply in AFFIRMATIVE:
+        return "CONFIRM"
+    if reply in NEGATIVE:
+        return "DENY"
+    
+    # Check if any affirmative phrase is in the reply
+    for phrase in AFFIRMATIVE:
+        if len(phrase) > 2 and phrase in reply:  # Only check phrases, not single chars
+            return "CONFIRM"
+    
+    # Check if any negative phrase is in the reply
+    for phrase in NEGATIVE:
+        if len(phrase) > 2 and phrase in reply:
+            return "DENY"
+    
+    return "OTHER"
 
 
 # =============================================================================
@@ -256,6 +328,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(reply)
             return
     
+    # ----- MERGE CONFIRMATION -----
+    if "pending_merge" in context.user_data:
+        confirmation = parse_confirmation(user_message)
+        pending = context.user_data["pending_merge"]
+        
+        if confirmation == "CONFIRM":
+            # Append to existing person
+            success = append_to_person(
+                pending["existing_person"]["row_idx"],
+                pending["original_text"],
+                pending["classification"]["fields"],
+                pending["message_id"]
+            )
+            
+            if success:
+                reply = f"Added to {pending['existing_person']['name']}."
+            else:
+                reply = "❌ Error updating. Please try again."
+            
+            del context.user_data["pending_merge"]
+            await update.message.reply_text(reply)
+            return
+        
+        elif confirmation == "DENY":
+            # Save as new person
+            success = save_entry(pending["original_text"], pending["classification"], pending["message_id"], force_new=True)
+            
+            if success:
+                name = pending["classification"]["fields"].get("name", "")
+                reply = f"Got it — new {name} saved."
+            else:
+                reply = "❌ Error saving. Please try again."
+            
+            del context.user_data["pending_merge"]
+            await update.message.reply_text(reply)
+            return
+        
+        else:
+            # OTHER - user sent something unrelated, clear pending and process as new message
+            del context.user_data["pending_merge"]
+            # Fall through to normal message processing
+    
     # ----- NORMAL MESSAGE: CLASSIFY AND SAVE -----
     classification = classify(user_message)
     
@@ -278,6 +392,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(reply)
         return
+    
+    # ----- CHECK FOR SIMILAR PERSON (MERGE PROMPT) -----
+    if classification["bucket"] == "people":
+        name = classification["fields"].get("name", "")
+        if name:
+            similar = find_similar_person(name)
+            
+            # If found a similar person (but not exact match that save_entry handles)
+            if similar and similar["score"] < 1.0:
+                identifier = extract_identifier(similar["context"])
+                
+                context.user_data["pending_merge"] = {
+                    "original_text": user_message,
+                    "classification": classification,
+                    "message_id": message_id,
+                    "existing_person": similar
+                }
+                
+                # Build short question
+                if identifier:
+                    reply = f"{similar['name']} {identifier}?"
+                else:
+                    reply = f"{similar['name']}?"
+                
+                await update.message.reply_text(reply)
+                return
     
     # Save to memory
     success = save_entry(user_message, classification, message_id)
