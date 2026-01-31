@@ -16,23 +16,48 @@ def get_sheets_client():
 
 
 def extract_identifier(context: str) -> str:
-    """Extract the most identifying detail from context."""
+    """Extract the most identifying detail from context - short and clean."""
     if not context:
         return ""
     
     context_lower = context.lower()
     
     # Check for company/workplace
-    work_keywords = ["works at", "at ", "from ", "@ "]
+    work_keywords = ["works at ", "works for ", "works in ", "working at ", "working for "]
     for keyword in work_keywords:
         if keyword in context_lower:
             idx = context_lower.find(keyword)
             rest = context[idx + len(keyword):].strip()
-            # Get first word or two (company name)
+            # Get company name (first word or two)
             words = rest.split()
             if words:
-                company = words[0].rstrip('.,;:')
-                return f"from {company}"
+                company = words[0].rstrip('.,;:()and')
+                if company:
+                    return f"works at {company}"
+    
+    # Check for job/role
+    role_keywords = ["is a ", "is an ", "as a ", "as an "]
+    for keyword in role_keywords:
+        if keyword in context_lower:
+            idx = context_lower.find(keyword)
+            rest = context[idx + len(keyword):].strip()
+            words = rest.split()[:2]
+            if words:
+                role = " ".join(words).rstrip('.,;:()and')
+                if role:
+                    return role
+    
+    # Check for location
+    location_keywords = ["lives in ", "based in ", "from "]
+    for keyword in location_keywords:
+        if keyword in context_lower:
+            idx = context_lower.find(keyword)
+            rest = context[idx + len(keyword):].strip()
+            words = rest.split()
+            if words:
+                location = words[0].rstrip('.,;:()and')
+                if location:
+                    return f"in {location}"
     
     # Check for relationship
     relation_keywords = ["roommate", "friend", "colleague", "brother", "sister", "wife", "husband", "partner", "boss", "manager", "coworker"]
@@ -40,32 +65,31 @@ def extract_identifier(context: str) -> str:
         if rel in context_lower:
             return f"your {rel}"
     
-    # Check for location
-    location_keywords = ["lives in", "in ", "based in"]
-    for keyword in location_keywords:
-        if keyword in context_lower:
-            idx = context_lower.find(keyword)
-            rest = context[idx + len(keyword):].strip()
-            words = rest.split()
-            if words:
-                location = words[0].rstrip('.,;:')
-                return f"in {location}"
-    
     # Check for event/meeting context
-    event_keywords = ["met at", "from the", "at the"]
+    event_keywords = ["met at ", "met during "]
     for keyword in event_keywords:
         if keyword in context_lower:
             idx = context_lower.find(keyword)
             rest = context[idx + len(keyword):].strip()
-            words = rest.split()[:3]
+            words = rest.split()[:2]
             if words:
-                event = " ".join(words).rstrip('.,;:')
-                return f"from the {event}"
+                event = " ".join(words).rstrip('.,;:()and')
+                if event:
+                    return f"met at {event}"
     
-    # Fallback: first few words of context
-    words = context.split()[:3]
+    # Fallback: first meaningful phrase (up to 3 words, clean)
+    # Remove common starting words
+    clean_context = context
+    for start in ["A ", "An ", "The ", "Is ", "Was "]:
+        if clean_context.startswith(start):
+            clean_context = clean_context[len(start):]
+    
+    words = clean_context.split()[:3]
     if words:
-        return " ".join(words).rstrip('.,;:')
+        result = " ".join(words).rstrip('.,;:()and ')
+        # Don't return if it ends awkwardly
+        if result and not result.endswith((' and', ' or', ' the', ' a', ' an')):
+            return result.lower()
     
     return ""
 
