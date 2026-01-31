@@ -333,6 +333,32 @@ def find_person(name: str) -> list:
         return []
 
 
+def get_all_people() -> list:
+    """Get all active people from the sheet."""
+    try:
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SHEET_ID)
+        sheet = spreadsheet.worksheet("People")
+        all_rows = sheet.get_all_values()
+        
+        people = []
+        for idx, row in enumerate(all_rows[1:], start=2):
+            if len(row) >= 1 and row[-1] == "TRUE":
+                people.append({
+                    "row_idx": idx,
+                    "name": row[0],
+                    "context": row[1] if len(row) > 1 else "",
+                    "notes": row[2] if len(row) > 2 else "",
+                    "follow_ups": row[3] if len(row) > 3 else "",
+                    "last_touched": row[4] if len(row) > 4 else ""
+                })
+        
+        return people
+    except Exception as e:
+        print(f"Memory error (get all people): {e}")
+        return []
+
+
 def log_to_inbox(spreadsheet, title, captured_text, bucket, confidence, timestamp, message_id):
     """Log entry to Inbox Log."""
     try:
