@@ -83,6 +83,111 @@ def needs_confirmation(confidence: float) -> bool:
     return confidence <= CONFIDENCE_THRESHOLD
 
 
+def is_person_question(message: str) -> dict:
+    """
+    Detect if message is a question about a person.
+    
+    Returns:
+    - {"is_question": False} if not a question
+    - {"is_question": True, "name": "Sarah", "query": "what does she do"} if question
+    """
+    prompt = f"""Analyze this message. Is the user asking a question about a specific person?
+
+Message: "{message}"
+
+Rules:
+- Questions like "What does Sarah do?", "Tell me about John", "Who is Mike?" → YES
+- Questions like "Who works at Google?", "Who did I meet last week?" → YES (searching for people)
+- New info like "Sarah loves chocolate", "Met John at conference" → NO (adding info, not asking)
+- Commands like "update Sarah", "edit John" → NO
+- General questions like "What's the weather?" → NO
+
+Return JSON only:
+- If NOT a question about people: {{"is_question": false}}
+- If asking about specific person: {{"is_question": true, "name": "extracted name or null", "query": "what they're asking"}}
+- If searching for people: {{"is_question": true, "name": null, "search_query": "who works at Google"}}"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1
+        )
+        result = response.choices[0].message.content.strip()
+        return json.loads(result)
+    except Exception as e:
+        print(f"Question detection error: {e}")
+        return {"is_question": False}
+
+
+def answer_person_question(person_data: dict, question: str) -> str:
+    """
+    Use GPT to answer a question about a person based on stored data.
+    """
+    prompt = f"""Based on this information about {person_data['name']}, answer the question naturally and concisely.
+
+STORED INFORMATION:
+Name: {person_data['name']}
+Context: {person_data.get('context', 'No context')}
+Notes: {person_data.get('notes', 'No notes')}
+Follow-ups: {person_data.get('follow_ups', 'None')}
+Last updated: {person_data.get('last_touched', 'Unknown')}
+
+QUESTION: {question}
+
+Rules:
+- Answer naturally, like a helpful assistant
+- If the info doesn't contain the answer, say "I don't have that info about [name]"
+- Keep it concise
+- Include relevant dates if helpful"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Answer generation error: {e}")
+        return f"Sorry, I couldn't process that question about {person_data['name']}."
+
+
+def search_people_by_criteria(people_list: list, search_query: str) -> list:
+    """
+    Use GPT to find people matching a search criteria.
+    """
+    if not people_list:
+        return []
+    
+    people_summary = "\n".join([
+        f"- {p['name']}: {p.get('context', '')} | Notes: {p.get('notes', '')[:100]}"
+        for p in people_list
+    ])
+    
+    prompt = f"""Given this list of people, find who matches the query.
+
+PEOPLE:
+{people_summary}
+
+QUERY: {search_query}
+
+Return JSON array of matching names only. Example: ["John", "Sarah"]
+If no matches, return: []"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1
+        )
+        result = response.choices[0].message.content.strip()
+        return json.loads(result)
+    except Exception as e:
+        print(f"People search error: {e}")
+        return []
+
+
 def semantic_person_match(existing_name: str, existing_context: str, new_name: str, new_context: str) -> str:
     """
     Use GPT to determine if two person entries are the same person.
