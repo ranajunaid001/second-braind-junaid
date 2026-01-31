@@ -92,34 +92,35 @@ def is_person_question(message: str) -> dict:
     - {"is_question": True, "name": "Sarah", "query": "what does she do"} if question about specific person
     - {"is_question": True, "name": null, "search_query": "lives in Boston"} if searching for people
     """
-    prompt = f"""Analyze this message. Is the user asking a question about people?
+    prompt = f"""Analyze this message and return JSON.
 
 Message: "{message}"
 
-IMPORTANT - Two types of questions:
+RULES:
+1. If message starts with "Who" + criteria (no specific name) → TYPE 2 (search)
+2. If message asks about a specific person's name → TYPE 1 (question)
+3. If message is adding info, not asking → NOT a question
 
-TYPE 1 - Question about a SPECIFIC person (has a name):
-- "What does Sarah do?" → name: "Sarah"
-- "Tell me about John" → name: "John"  
-- "Who is Mike?" → name: "Mike"
-- "Where does Julia work?" → name: "Julia"
+EXAMPLES:
 
-TYPE 2 - SEARCH for people by criteria (NO specific name):
-- "Who works at Google?" → search_query: "works at Google"
-- "Who lives in Boston?" → search_query: "lives in Boston"
-- "Who has a dog?" → search_query: "has a dog"
-- "Who did I meet at residency?" → search_query: "met at residency"
-- "Who knows Sydney Sweeney?" → search_query: "knows Sydney Sweeney"
+TYPE 2 - SEARCH (starts with "Who" + no name):
+"Who works at Google?" → {{"is_question": true, "name": null, "search_query": "works at Google"}}
+"Who lives in Boston?" → {{"is_question": true, "name": null, "search_query": "lives in Boston"}}
+"Who works at McKinsey?" → {{"is_question": true, "name": null, "search_query": "works at McKinsey"}}
+"Who has a dog?" → {{"is_question": true, "name": null, "search_query": "has a dog"}}
 
-NOT a question (adding new info):
-- "Sarah loves chocolate" → NO
-- "Met John at conference" → NO
-- "Alex got promoted" → NO
+TYPE 1 - QUESTION (has a specific person's name):
+"What does Sarah do?" → {{"is_question": true, "name": "Sarah", "query": "what does she do"}}
+"Tell me about Jack" → {{"is_question": true, "name": "Jack", "query": "tell me about him"}}
+"Who is Mike?" → {{"is_question": true, "name": "Mike", "query": "who is he"}}
 
-Return JSON only:
-- If NOT a question: {{"is_question": false}}
-- If TYPE 1 (specific person): {{"is_question": true, "name": "the person's name", "query": "what they're asking"}}
-- If TYPE 2 (search): {{"is_question": true, "name": null, "search_query": "the criteria without 'who'"}}"""
+NOT A QUESTION (adding info):
+"Sarah loves coffee" → {{"is_question": false}}
+"Met John yesterday" → {{"is_question": false}}
+
+CRITICAL: If message starts with "Who works/lives/has/knows..." it is ALWAYS TYPE 2 with search_query, NOT name.
+
+Return JSON only:"""
 
     try:
         response = client.chat.completions.create(
