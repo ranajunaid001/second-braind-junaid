@@ -25,7 +25,7 @@ BUCKET_SHORTCUTS = {
     "ppl": "people", "p": "people", "people": "people",
     "idea": "ideas", "ideas": "ideas", "i": "ideas",
     "int": "interviews", "interview": "interviews", "interviews": "interviews",
-    "adm": "admin", "admin": "admin", "a": "admin",
+    "things": "things", "thing": "things", "t": "things",
     "li": "linkedin", "ln": "linkedin", "linkedin": "linkedin", "l": "linkedin"
 }
 
@@ -33,7 +33,7 @@ TABLE_SHORTCUTS = {
     "ppl": "People", "p": "People", "people": "People",
     "idea": "Ideas", "ideas": "Ideas", "i": "Ideas",
     "int": "Interviews", "interview": "Interviews", "interviews": "Interviews",
-    "adm": "Admin", "admin": "Admin", "a": "Admin",
+    "things": "Things", "thing": "Things", "t": "Things",
     "li": "LinkedIn", "ln": "LinkedIn", "linkedin": "LinkedIn", "l": "LinkedIn",
     "all": "all"
 }
@@ -87,7 +87,7 @@ async def send_digest_async():
     if not data:
         return False, "Could not fetch data"
     
-    if not data["interviews"] and not data["admin"] and not data["people"]:
+    if not data["interviews"] and not data["things"] and not data["people"]:
         message = "📋 Daily Digest\n\nNo pending actions. You're all caught up! 🎉"
     else:
         message = generate_digest(data)
@@ -184,7 +184,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Could not fetch data.")
                 return
             
-            if not data["interviews"] and not data["admin"] and not data["people"]:
+            if not data["interviews"] and not data["things"] and not data["people"]:
                 reply = "📋 Daily Digest\n\nNo pending actions. You're all caught up! 🎉"
             else:
                 reply = generate_digest(data)
@@ -208,7 +208,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_bucket = user_message_lower.replace("fix:", "").replace("fix", "").replace("fx:", "").replace("fx", "").strip()
         new_bucket = BUCKET_SHORTCUTS.get(new_bucket, new_bucket)
         
-        if new_bucket in ["people", "ideas", "interviews", "admin", "linkedin"]:
+        if new_bucket in ["people", "ideas", "interviews", "things", "linkedin"]:
             if "last_message" in context.user_data:
                 last = context.user_data["last_message"]
                 success, old_bucket = fix_entry(
@@ -225,13 +225,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 reply = "❌ No recent message to fix."
         else:
-            reply = "❌ Invalid category. Use: fix people / fix ideas / fix interviews / fix admin / fix linkedin"
+            reply = "❌ Invalid category. Use: fix people / fix ideas / fix interviews / fix things / fix linkedin"
         
         await update.message.reply_text(reply)
         return
     
     # ----- LOW CONFIDENCE CORRECTION -----
-    if user_message_lower in ["people", "ideas", "interviews", "admin", "linkedin"]:
+    if user_message_lower in ["people", "ideas", "interviews", "things", "linkedin"]:
         if "pending_message" in context.user_data:
             pending = context.user_data["pending_message"]
             pending["classification"]["bucket"] = user_message_lower
@@ -274,7 +274,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply += f"Message: \"{user_message[:50]}{'...' if len(user_message) > 50 else ''}\"\n"
         reply += f"My guess: {classification['bucket'].capitalize()} ({int(classification['confidence'] * 100)}%)\n\n"
         reply += "Reply with the correct category:\n"
-        reply += "• people\n• ideas\n• interviews\n• admin\n• linkedin"
+        reply += "• people\n• ideas\n• interviews\n• things\n• linkedin"
         
         await update.message.reply_text(reply)
         return
@@ -285,12 +285,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if success:
         confidence_pct = int(classification["confidence"] * 100)
         fields = classification["fields"]
+        bucket = classification['bucket'].capitalize()
         title = fields.get("name") or fields.get("idea") or fields.get("company") or fields.get("task") or "Item"
         
-        reply = f"✓ Filed as: {classification['bucket'].capitalize()}\n"
-        reply += f"Title: {title}\n"
-        reply += f"Confidence: {confidence_pct}%\n"
-        reply += f"Reply 'fix <category>' if wrong."
+        # Build conversational reply
+        reply = f"Got it — saved to {bucket}.\n\n"
+        reply += f"\"{title}\""
+        
+        # Add relevant details based on bucket
+        if classification['bucket'] == 'things' and fields.get('due'):
+            reply += f"\nDue: {fields.get('due')}"
+        elif classification['bucket'] == 'people' and fields.get('context'):
+            reply += f"\n{fields.get('context')}"
+        elif classification['bucket'] == 'interviews' and fields.get('company'):
+            if fields.get('role'):
+                reply += f" — {fields.get('role')}"
+        
+        reply += f"\n\nWrong? Say 'fix {classification['bucket']}'"
         
         context.user_data["last_message"] = {
             "message_id": message_id,
