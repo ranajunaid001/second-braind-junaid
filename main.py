@@ -6,8 +6,8 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from flask import Flask, jsonify
 
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENAI_API_KEY
-from classifier import classify, needs_confirmation, format_person_info, semantic_person_match
-from memory import save_entry, fix_entry, get_items, get_digest_data, find_person, find_similar_person, append_to_person, extract_identifier
+from classifier import classify, needs_confirmation, format_person_info, semantic_person_match, is_person_question, answer_person_question, search_people_by_criteria
+from memory import save_entry, fix_entry, get_items, get_digest_data, find_person, find_similar_person, append_to_person, extract_identifier, get_all_people
 from prompts import DIGEST_PROMPT, get_top_items_prompt
 from openai import OpenAI
 
@@ -244,7 +244,130 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
         return
     
-    # ----- COMMAND: top <table> -----
+    # ----- PERSON QUESTION HANDLER (pending answer) -----
+    if "pending_person_question" in context.user_data:
+        pending = context.user_data["pending_person_question"]
+        
+        # Check if user selected a number
+        if user_message.strip().isdigit():
+            idx = int(user_message.strip()) - 1
+            if 0 <= idx < len(pending["matches"]):
+                selected = pending["matches"][idx]
+                answer = answer_person_question(selected, pending["original_question"])
+                del context.user_data["pending_person_question"]
+                await update.message.reply_text(answer)
+                return
+            else:
+                await update.message.reply_text(f"Pick a number between 1 and {len(pending['matches'])}")
+                return
+        
+        # Check if user confirmed (yes/no for single match)
+        confirmation = parse_confirmation(user_message)
+        if confirmation == "CONFIRM" and len(pending["matches"]) == 1:
+            selected = pending["matches"][0]
+            answer = answer_person_question(selected, pending["original_question"])
+            del context.user_data["pending_person_question"]
+            await update.message.reply_text(answer)
+            return
+        elif confirmation == "DENY":
+            del context.user_data["pending_person_question"]
+            await update.message.reply_text("Ok, nevermind.")
+            return
+        
+        # Check if user mentioned an identifier to pick
+        user_lower = user_message.lower()
+        for i, match in enumerate(pending["matches"]):
+            identifier = extract_identifier(match.get("context", ""))
+            if identifier:
+                # Check if identifier words are in user's reply
+                id_words = identifier.lower().replace("from ", "").replace("your ", "").split()
+                if any(word in user_lower for word in id_words if len(word) > 2):
+                    selected = match
+                    answer = answer_person_question(selected, pending["original_question"])
+                    del context.user_data["pending_person_question"]
+                    await update.message.reply_text(answer)
+                    return
+        
+        # Didn't understand - clear and fall through to process as new message
+        del context.user_data["pending_person_question"]
+    
+    # ----- DETECT PERSON QUESTION -----
+    question_check = is_person_question(user_message)
+    
+    if question_check.get("is_question"):
+        name = question_check.get("name")
+        query = question_check.get("query", user_message)
+        search_query = question_check.get("search_query")
+        
+        # Search by criteria (e.g., "Who works at Google?")
+        if search_query and not name:
+            all_people = get_all_people()
+            if not all_people:
+                await update.message.reply_text("I don't have any people saved yet.")
+                return
+            
+            matching_names = search_people_by_criteria(all_people, search_query)
+            if not matching_names:
+                await update.message.reply_text("No one matches that criteria.")
+                return
+            
+            # Get full data for matching people
+            matches = [p for p in all_people if p["name"] in matching_names]
+            if len(matches) == 1:
+                answer = answer_person_question(matches[0], query)
+                await update.message.reply_text(answer)
+                return
+            else:
+                reply = "Found:\n"
+                for m in matches:
+                    identifier = extract_identifier(m.get("context", ""))
+                    reply += f"• {m['name']}"
+                    if identifier:
+                        reply += f" {identifier}"
+                    reply += "\n"
+                await update.message.reply_text(reply)
+                return
+        
+        # Search by name
+        if name:
+            matches = find_person(name)
+            
+            if not matches:
+                await update.message.reply_text(f"I don't have anyone named {name}.")
+                return
+            
+            if len(matches) == 1:
+                # Single match - confirm first
+                identifier = extract_identifier(matches[0].get("context", ""))
+                context.user_data["pending_person_question"] = {
+                    "matches": matches,
+                    "original_question": query
+                }
+                
+                if identifier:
+                    reply = f"{matches[0]['name']} {identifier}?"
+                else:
+                    reply = f"{matches[0]['name']}?"
+                await update.message.reply_text(reply)
+                return
+            
+            else:
+                # Multiple matches - ask which one
+                context.user_data["pending_person_question"] = {
+                    "matches": matches,
+                    "original_question": query
+                }
+                
+                reply = "Which one?\n"
+                for i, m in enumerate(matches, 1):
+                    identifier = extract_identifier(m.get("context", ""))
+                    reply += f"{i}. {m['name']}"
+                    if identifier:
+                        reply += f" {identifier}"
+                    reply += "\n"
+                await update.message.reply_text(reply)
+                return
+
     if user_message_lower.startswith("top"):
         table_request = user_message_lower.replace("top", "").strip()
         table_name = TABLE_SHORTCUTS.get(table_request)
