@@ -85,54 +85,111 @@ def needs_confirmation(confidence: float) -> bool:
 
 def is_person_question(message: str) -> dict:
     """
-    Detect if message is a question about a person or a search for people.
-    
-    Returns:
-    - {"is_question": False} if not a question
-    - {"is_question": True, "name": "Sarah", "query": "what does she do"} if question about specific person
-    - {"is_question": True, "name": null, "search_query": "lives in Boston"} if searching for people
+    Detect if message is a question about people.
+    Simple check - if it looks like a question, return True.
     """
-    prompt = f"""Analyze this message and return JSON.
+    message_lower = message.lower().strip()
+    
+    # Question indicators
+    question_starters = ["who ", "what ", "tell me", "where ", "when ", "how ", "why ", "does ", "is ", "are ", "do "]
+    ends_with_question = message.endswith("?")
+    starts_with_question = any(message_lower.startswith(q) for q in question_starters)
+    
+    if ends_with_question or starts_with_question:
+        return {"is_question": True, "query": message}
+    
+    return {"is_question": False}
 
-Message: "{message}"
 
-RULES:
-1. If message starts with "Who" + criteria (no specific name) → TYPE 2 (search)
-2. If message asks about a specific person's name → TYPE 1 (question)
-3. If message is adding info, not asking → NOT a question
+def extract_search_keywords(query: str) -> list:
+    """
+    Extract meaningful keywords from a search query.
+    Removes common words, keeps important terms.
+    """
+    # Common words to ignore
+    stop_words = {
+        "who", "what", "where", "when", "why", "how", "is", "are", "was", "were",
+        "do", "does", "did", "the", "a", "an", "at", "in", "on", "to", "for",
+        "of", "with", "about", "tell", "me", "i", "my", "you", "your", "we",
+        "they", "them", "that", "this", "it", "and", "or", "but", "have", "has",
+        "had", "can", "could", "would", "should", "will", "did", "meet", "met",
+        "know", "knows", "work", "works", "live", "lives", "any", "some"
+    }
+    
+    # Clean and split
+    query_clean = query.lower().strip().rstrip("?").strip()
+    words = query_clean.split()
+    
+    # Filter out stop words, keep meaningful keywords
+    keywords = [w for w in words if w not in stop_words and len(w) > 1]
+    
+    return keywords
 
-EXAMPLES:
 
-TYPE 2 - SEARCH (starts with "Who" + no name):
-"Who works at Google?" → {{"is_question": true, "name": null, "search_query": "works at Google"}}
-"Who lives in Boston?" → {{"is_question": true, "name": null, "search_query": "lives in Boston"}}
-"Who works at McKinsey?" → {{"is_question": true, "name": null, "search_query": "works at McKinsey"}}
-"Who has a dog?" → {{"is_question": true, "name": null, "search_query": "has a dog"}}
+def search_people_by_keywords(people_list: list, keywords: list) -> list:
+    """
+    Search people by keywords. Case-insensitive, partial match.
+    Returns list of matching people.
+    """
+    if not keywords:
+        return []
+    
+    matches = []
+    
+    for person in people_list:
+        # Combine all searchable text
+        searchable = " ".join([
+            person.get("name", ""),
+            person.get("context", ""),
+            person.get("notes", ""),
+            person.get("follow_ups", "")
+        ]).lower()
+        
+        # Check if ANY keyword matches
+        for keyword in keywords:
+            if keyword in searchable:
+                matches.append(person)
+                break  # Don't add same person twice
+    
+    return matches
 
-TYPE 1 - QUESTION (has a specific person's name):
-"What does Sarah do?" → {{"is_question": true, "name": "Sarah", "query": "what does she do"}}
-"Tell me about Jack" → {{"is_question": true, "name": "Jack", "query": "tell me about him"}}
-"Who is Mike?" → {{"is_question": true, "name": "Mike", "query": "who is he"}}
 
-NOT A QUESTION (adding info):
-"Sarah loves coffee" → {{"is_question": false}}
-"Met John yesterday" → {{"is_question": false}}
+def generate_search_answer(question: str, matching_people: list) -> str:
+    """
+    Use LLM to answer the question based on matching people data.
+    """
+    if not matching_people:
+        return "No one matches that criteria."
+    
+    # Build context from matching people
+    people_info = ""
+    for p in matching_people:
+        people_info += f"\n- {p['name']}: {p.get('context', '')} | Notes: {p.get('notes', '')[:200]}"
+    
+    prompt = f"""Answer this question based on the people data below.
 
-CRITICAL: If message starts with "Who works/lives/has/knows..." it is ALWAYS TYPE 2 with search_query, NOT name.
+Question: "{question}"
 
-Return JSON only:"""
+Matching people:{people_info}
+
+Rules:
+- Answer naturally and concisely
+- If multiple people match, list them
+- If the data doesn't fully answer the question, say what you know
+- Keep it short"""
 
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.1
+            temperature=0.3
         )
-        result = response.choices[0].message.content.strip()
-        return json.loads(result)
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Question detection error: {e}")
-        return {"is_question": False}
+        print(f"Search answer error: {e}")
+        # Fallback: list names
+        names = [p["name"] for p in matching_people]
+        return f"Found: {', '.join(names)}"
 
 
 def answer_person_question(person_data: dict, question: str) -> str:
