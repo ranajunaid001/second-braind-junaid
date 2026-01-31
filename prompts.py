@@ -49,6 +49,23 @@ IMPORTANT RULES:
 4. "pay bill", "buy groceries", "schedule appointment" → "things"
 5. confidence 0.9+ = very sure, 0.7-0.89 = likely, 0.6-0.69 = weak, <0.6 = uncertain
 
+DATA CLEANING RULES (apply to all fields):
+1. Capitalize names properly (alex → Alex, AR/VI → AR/VR)
+2. Fix obvious typos and abbreviations
+3. Use proper grammar and punctuation
+4. Format context as a clean, readable sentence
+5. Remove filler words like "um", "uh", "like"
+6. Keep it concise but complete
+
+Example:
+Input: "met alex at residency, leads products for ar/vi, says he's interested in my startup"
+Output fields for people:
+{
+  "name": "Alex",
+  "context": "Met at residency. Leads product for AR/VR. Interested in my startup.",
+  "follow_ups": ""
+}
+
 User message:
 """
 
