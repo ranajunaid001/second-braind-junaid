@@ -131,8 +131,10 @@ Question: "{question}"
 Rules:
 - Answer naturally and concisely, like a friend would
 - Use ALL the data (context, notes, follow-ups) to answer
-- If multiple people match, list them all with a number (1. 2. etc)
-- If asking about a specific person, give their full info in one clean sentence
+- ONLY include people whose data actually answers the question
+- If the question is about a trait (works at X, lives in Y), only return people whose data explicitly mentions that trait
+- If multiple people with the same name exist, do NOT group them together unless BOTH match the query
+- If asking about a specific person by name and multiple exist, show all of them
 - If the data doesn't answer the question, say so honestly
 - Keep it short and conversational
 - Don't make up information that isn't in the data
