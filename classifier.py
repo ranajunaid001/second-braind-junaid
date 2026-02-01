@@ -129,13 +129,29 @@ def answer_people_query(question: str, all_people: list) -> str:
 Question: "{question}"
 
 Rules:
-- Answer naturally and concisely
+- Answer naturally and concisely, like a friend would
 - Use ALL the data (context, notes, follow-ups) to answer
-- If multiple people match, list them all
-- If asking about a specific person, give their full info
+- If multiple people match, list them all with a number (1. 2. etc)
+- If asking about a specific person, give their full info in one clean sentence
 - If the data doesn't answer the question, say so honestly
 - Keep it short and conversational
-- Don't make up information that isn't in the data"""
+- Don't make up information that isn't in the data
+
+FORMATTING RULES (very important):
+- NO markdown. No asterisks, no bold, no italic, no headers
+- NO dashes or hyphens as separators
+- Use commas to separate details
+- NO labels like "Name:" or "Context:" or "Notes:"
+- NO raw dates like [2026-01-31]
+- NO filler like "Let me know if you need more" or "Here's what I found"
+- If someone has no follow-ups or notes, just skip it, don't mention it's empty
+- For multiple people with same name, use numbered list like:
+  Two Sarahs:
+  1. Sarah, works at Apple as a designer. Joined a new gym in NH.
+  2. Sarah, met at conference. Amazing speaker. Meeting again in NY next month.
+
+Example good answer: Jack, met at residency. Lives in Boston, works at McKinsey.
+Example bad answer: **Jack** - Met at residency. Lives in Boston. **Works at:** McKinsey. **Last updated:** Jan 31"""
 
     try:
         response = client.chat.completions.create(
@@ -196,37 +212,24 @@ Return ONLY one word: SAME, LIKELY_SAME, LIKELY_DIFFERENT, or DIFFERENT"""
 
 
 def format_person_info(person: dict) -> str:
-    """Format person info for display - clean and readable."""
-    result = f"👤 {person['name']}\n"
+    """Format person info for display - clean, no markdown, conversational."""
+    parts = [person['name']]
     
     if person.get('context'):
-        result += f"{person['context']}\n"
+        parts.append(person['context'])
     
-    result += "\n"
-    
+    # Add notes without dates
     if person.get('notes'):
-        # Parse notes and display as bullet points without dates
         notes = person['notes']
-        # Split by bullet separator
         note_list = notes.split(' • ')
         for note in note_list:
-            # Remove date prefix like [2026-01-19]
             clean_note = note
             if note.startswith('['):
                 clean_note = note.split('] ', 1)[-1]
-            result += f"• {clean_note}\n"
+            if clean_note and clean_note.lower() not in ' '.join(parts).lower():
+                parts.append(clean_note)
     
     if person.get('follow_ups') and not person['follow_ups'].startswith('2026'):
-        result += f"\n📌 {person['follow_ups']}\n"
+        parts.append("Follow up: " + person['follow_ups'])
     
-    if person.get('last_touched'):
-        # Format date nicely
-        try:
-            date_str = person['last_touched'][:10]  # Get YYYY-MM-DD
-            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-            nice_date = date_obj.strftime("%b %d")  # Jan 19
-            result += f"\nLast updated: {nice_date}"
-        except:
-            pass
-    
-    return result.strip()
+    return ', '.join(parts[:4])
