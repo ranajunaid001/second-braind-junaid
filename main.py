@@ -295,9 +295,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ----- DETECT PERSON QUESTION -----
     question_check = is_person_question(user_message)
+    print(f"[DEBUG] Question check result: {question_check}")
     
     if question_check.get("is_question"):
         query = question_check.get("query", user_message)
+        print(f"[DEBUG] Query: {query}")
         
         # Get all people
         all_people = get_all_people()
@@ -305,21 +307,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("I don't have any people saved yet.")
             return
         
+        print(f"[DEBUG] Total people found: {len(all_people)}")
+        print(f"[DEBUG] People names: {[p['name'] for p in all_people]}")
+        
         # Extract keywords and search
         keywords = extract_search_keywords(query)
+        print(f"[DEBUG] Keywords extracted: {keywords}")
         
         if keywords:
             # Search by keywords
             matches = search_people_by_keywords(all_people, keywords)
+            print(f"[DEBUG] Keyword matches: {[m['name'] for m in matches]}")
             
             if matches:
                 # Generate answer using LLM
                 answer = generate_search_answer(query, matches)
+                print(f"[DEBUG] LLM answer: {answer}")
                 await update.message.reply_text(answer)
                 return
             else:
+                print(f"[DEBUG] No keyword matches, trying name matching")
                 # No keyword matches - try to find a name in the query
-                # Check if any word in query matches a person's name
                 query_words = query.lower().split()
                 name_matches = []
                 for person in all_people:
@@ -328,6 +336,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if word in person_name_lower or person_name_lower in word:
                             name_matches.append(person)
                             break
+                
+                print(f"[DEBUG] Name matches: {[m['name'] for m in name_matches]}")
                 
                 if name_matches:
                     if len(name_matches) == 1:
@@ -353,6 +363,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("No one matches that criteria.")
                 return
         else:
+            print(f"[DEBUG] No keywords extracted, trying name fallback")
             # No keywords extracted - might be a general question
             # Try name matching as fallback
             query_words = query.lower().split()
