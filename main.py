@@ -6,7 +6,7 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from flask import Flask, jsonify
 
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENAI_API_KEY
-from classifier import classify, needs_confirmation, format_person_info, semantic_person_match, is_person_question, answer_people_query
+from classifier import classify, needs_confirmation, format_person_info, semantic_person_match, is_person_question, answer_people_query, answer_actionable_query
 from memory import save_entry, fix_entry, get_items, get_digest_data, find_similar_person, append_to_person, extract_identifier, get_all_people
 from prompts import DIGEST_PROMPT, get_top_items_prompt
 from openai import OpenAI
@@ -324,22 +324,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(answer)
         return
 
-    # ----- TASKS PHRASES -----
-    tasks_phrases = [
-        "items for today",
-        "give me top things for today",
-        "what do i need to do today",
-        "what's due today",
-        "whats due today",
-        "today's tasks",
-        "todays tasks",
-        "what's on my plate",
-        "whats on my plate"
+    # ----- ACTIONABLE TASKS QUERY -----
+    action_phrases = [
+        "items for today", "give me top things for today",
+        "what do i need to do today", "what's due today", "whats due today",
+        "today's tasks", "todays tasks", "what's on my plate", "whats on my plate",
+        "what should i do today", "what do i have today", "anything pending",
+        "my tasks", "my actions", "what's pending", "whats pending",
+        "what do i need to do", "what should i do"
     ]
     
-    if user_message_lower in tasks_phrases or user_message_lower.rstrip("?") in tasks_phrases:
-        items = get_items("Things")
-        reply = format_top_items("Things", items)
+    if user_message_lower in action_phrases or user_message_lower.rstrip("?") in action_phrases:
+        from memory import get_actionable_data
+        data = get_actionable_data()
+        if not data:
+            await update.message.reply_text("Could not fetch data.")
+            return
+        
+        reply = answer_actionable_query(user_message, data)
         await update.message.reply_text(reply)
         return
 
