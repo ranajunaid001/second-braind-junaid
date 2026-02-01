@@ -483,6 +483,52 @@ def get_items(table_name: str, active_only: bool = True) -> list:
         return []
 
 
+def get_actionable_data() -> dict:
+    """Pull actionable items from People and Things."""
+    try:
+        client = get_sheets_client()
+        spreadsheet = client.open_by_key(SHEET_ID)
+        
+        data = {
+            "people": [],
+            "things": []
+        }
+        
+        # Get People (all active — LLM will find actionable items)
+        try:
+            sheet = spreadsheet.worksheet("People")
+            rows = sheet.get_all_values()[1:]
+            for row in rows:
+                if len(row) >= 6 and row[-1] == "TRUE":
+                    data["people"].append({
+                        "name": row[0],
+                        "context": row[1],
+                        "notes": row[2] if len(row) > 2 else "",
+                        "follow_ups": row[3] if len(row) > 3 else ""
+                    })
+        except Exception as e:
+            print(f"Error reading People: {e}")
+        
+        # Get Things (open tasks)
+        try:
+            sheet = spreadsheet.worksheet("Things")
+            rows = sheet.get_all_values()[1:]
+            for row in rows:
+                if len(row) >= 5 and row[-1] == "TRUE" and row[1] == "Open":
+                    data["things"].append({
+                        "task": row[0],
+                        "due": row[2],
+                        "next_action": row[3]
+                    })
+        except Exception as e:
+            print(f"Error reading Things: {e}")
+        
+        return data
+    except Exception as e:
+        print(f"Memory error (actionable data): {e}")
+        return None
+
+
 def get_digest_data() -> dict:
     """Pull data from sheets for daily digest."""
     try:
