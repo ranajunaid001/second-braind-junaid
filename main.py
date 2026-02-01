@@ -7,7 +7,7 @@ from flask import Flask, jsonify
 
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENAI_API_KEY
 from classifier import classify, needs_confirmation, format_person_info, semantic_person_match, is_person_question, answer_people_query
-from memory import save_entry, fix_entry, get_items, get_digest_data, find_person, find_similar_person, append_to_person, extract_identifier, get_all_people
+from memory import save_entry, fix_entry, get_items, get_digest_data, find_similar_person, append_to_person, extract_identifier, get_all_people
 from prompts import DIGEST_PROMPT, get_top_items_prompt
 from openai import OpenAI
 
@@ -223,28 +223,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message_lower = user_message.lower()
     message_id = update.message.message_id
     
-    # ----- COMMAND: who <name> -----
-    if user_message_lower.startswith("who "):
-        name = user_message[4:].strip()
-        # Strip punctuation from search
-        name = name.rstrip('?!.,;:')
-        matches = find_person(name)
-        
-        if not matches:
-            reply = f"No one found matching '{name}'."
-        elif len(matches) == 1:
-            reply = format_person_info(matches[0])
-        else:
-            reply = f"Found {len(matches)} people:\n\n"
-            for m in matches:
-                reply += f"• {m['name']}"
-                if m.get('context'):
-                    reply += f" ({m['context'][:30]}...)"
-                reply += "\n"
-            reply += "\nBe more specific."
-        
-        await update.message.reply_text(reply)
-        return
     
     # ----- PERSON QUESTION HANDLER (pending answer) -----
     if "pending_person_question" in context.user_data:
