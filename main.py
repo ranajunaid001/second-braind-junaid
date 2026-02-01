@@ -286,7 +286,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("I don't have any people saved yet.")
             return
         
-        # One LLM call - send all data + question
+        # Check if question is about a specific person name with multiple matches
+        # Extract potential name from question (strip question words)
+        query_lower = query.lower().strip().rstrip('?!.')
+        strip_words = ["tell me about", "tell about", "what about", "who is", "who's", "show me"]
+        extracted_name = query_lower
+        for sw in strip_words:
+            if extracted_name.startswith(sw):
+                extracted_name = extracted_name[len(sw):].strip()
+                break
+        
+        # Check if extracted name matches multiple people
+        if extracted_name:
+            name_matches = [p for p in all_people if p['name'].lower() == extracted_name.lower()]
+            if len(name_matches) > 1:
+                # Multiple matches — ask which one (question mode)
+                context.user_data["pending_person_question"] = {
+                    "original_question": query,
+                    "matches": name_matches
+                }
+                
+                person_name = name_matches[0]['name']
+                reply = f"Which {person_name}?\n"
+                for i, m in enumerate(name_matches, 1):
+                    identifier = extract_identifier(m.get("context", ""))
+                    reply_line = f"{i}. {m['name']}"
+                    if identifier:
+                        reply_line += f", {identifier.replace('from ', '')}"
+                    reply += reply_line + "\n"
+                
+                await update.message.reply_text(reply)
+                return
+        
+        # Single or no specific name — send all data to LLM
         answer = answer_people_query(query, all_people)
         print(f"[DEBUG] LLM answer: {answer}")
         await update.message.reply_text(answer)
