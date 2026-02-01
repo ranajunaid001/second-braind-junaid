@@ -200,7 +200,7 @@ def answer_actionable_query(question: str, data: dict) -> str:
     
     prompt = f"""You are a personal assistant. Today is {today}.
 
-PEOPLE I KNOW:
+PEOPLE AND THEIR PENDING ACTIONS:
 {people_data if people_data else "None"}
 
 OPEN TASKS:
@@ -208,13 +208,18 @@ OPEN TASKS:
 
 Question: "{question}"
 
-STRICT RULES:
-1. TIME FILTERING is critical. If the question says "today", ONLY return items that are due TODAY or have no date but are urgent. If the question says "this week", return items due within this week. Do NOT dump everything.
-2. If an item says "Friday" and today is Saturday, that was yesterday — skip it unless it's still undone.
-3. If an item says "late February" and today is early February, it's NOT due today — skip it for "today" queries but include for "this week" or broader queries.
-4. If nothing is due for the requested time period, say "Nothing specific for today. Here's what's coming up:" and list the next 2-3 upcoming items.
+YOUR JOB: Find actionable items from BOTH sections above.
 
-FORMAT (follow exactly):
+People actions include: calls to make, people to text/follow up with, gifts to buy, meetings to schedule, things to check. Look at the "Action" field AND the context/notes for anything that sounds like a to-do.
+
+Things actions include: bills to pay, errands, tasks with due dates.
+
+TIME FILTERING:
+- If question says "today": return items due today, plus undated actions that could be done today. Items with no specific date ARE eligible — they're ongoing to-dos.
+- If question says "this week": return items due this week plus undated actions.
+- If a date has clearly passed (e.g. "Friday" and today is Saturday), still include it as overdue.
+
+FORMAT (follow exactly, note the blank line between sections):
 
 People:
 1. action here
@@ -223,13 +228,14 @@ People:
 Things:
 1. action here
 
-FORMATTING RULES:
+RULES:
 - NO markdown, no asterisks, no bold, no dashes
+- Always put a blank line between People and Things sections
 - Max 3 people actions, max 2 things actions
 - If no people actions, skip the People section entirely
 - If no things actions, skip the Things section entirely
-- Keep each item to one short line
-- Start each item with the person's name or task name"""
+- One short line per item, start with name
+- If absolutely nothing is actionable, say: All clear, nothing pending."""
 
     try:
         response = client.chat.completions.create(
