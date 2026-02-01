@@ -200,22 +200,21 @@ def answer_actionable_query(question: str, data: dict) -> str:
     
     prompt = f"""You are a personal assistant. Today is {today}.
 
-Here are the people I know and related actions:
+PEOPLE I KNOW:
 {people_data if people_data else "None"}
 
-Here are my open tasks:
+OPEN TASKS:
 {things_data if things_data else "None"}
 
 Question: "{question}"
 
-Return up to 3 people-related actions (calls, texts, follow-ups, meetings) and up to 2 task actions from Things. Only include items that are actually actionable — not just info.
+STRICT RULES:
+1. TIME FILTERING is critical. If the question says "today", ONLY return items that are due TODAY or have no date but are urgent. If the question says "this week", return items due within this week. Do NOT dump everything.
+2. If an item says "Friday" and today is Saturday, that was yesterday — skip it unless it's still undone.
+3. If an item says "late February" and today is early February, it's NOT due today — skip it for "today" queries but include for "this week" or broader queries.
+4. If nothing is due for the requested time period, say "Nothing specific for today. Here's what's coming up:" and list the next 2-3 upcoming items.
 
-If nothing is actionable today, say so.
-
-FORMATTING RULES:
-- NO markdown, no asterisks, no bold
-- NO dashes as separators
-- Use this exact format:
+FORMAT (follow exactly):
 
 People:
 1. action here
@@ -224,11 +223,13 @@ People:
 Things:
 1. action here
 
+FORMATTING RULES:
+- NO markdown, no asterisks, no bold, no dashes
+- Max 3 people actions, max 2 things actions
 - If no people actions, skip the People section entirely
 - If no things actions, skip the Things section entirely
 - Keep each item to one short line
-- Include the person's name or task name
-- Include due date or timing if available"""
+- Start each item with the person's name or task name"""
 
     try:
         response = client.chat.completions.create(
