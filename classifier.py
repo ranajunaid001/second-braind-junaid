@@ -91,7 +91,7 @@ def is_person_question(message: str) -> dict:
     message_lower = message.lower().strip()
     
     # Question indicators
-    question_starters = ["who ", "what ", "tell me", "where ", "when ", "how ", "why ", "does ", "is ", "are ", "do "]
+    question_starters = ["who ", "what ", "tell me", "where ", "when ", "how ", "why ", "does ", "is ", "are ", "do ", "anyone", "anybody"]
     ends_with_question = message.endswith("?")
     starts_with_question = any(message_lower.startswith(q) for q in question_starters)
     
@@ -101,82 +101,41 @@ def is_person_question(message: str) -> dict:
     return {"is_question": False}
 
 
-def extract_search_keywords(query: str) -> list:
+def answer_people_query(question: str, all_people: list) -> str:
     """
-    Extract meaningful keywords from a search query.
-    Removes common words, keeps important terms.
+    One LLM call - send all people data and the question.
+    LLM figures out everything.
     """
-    # Common words to ignore
-    stop_words = {
-        "who", "what", "where", "when", "why", "how", "is", "are", "was", "were",
-        "do", "does", "did", "the", "a", "an", "at", "in", "on", "to", "for",
-        "of", "with", "about", "tell", "me", "i", "my", "you", "your", "we",
-        "they", "them", "that", "this", "it", "and", "or", "but", "have", "has",
-        "had", "can", "could", "would", "should", "will", "did", "meet", "met",
-        "know", "knows", "work", "works", "live", "lives", "any", "some"
-    }
+    if not all_people:
+        return "I don't have any people saved yet."
     
-    # Clean and split
-    query_clean = query.lower().strip().rstrip("?").strip()
-    words = query_clean.split()
+    # Build all people data
+    people_data = ""
+    for p in all_people:
+        people_data += f"\n---\nName: {p['name']}"
+        if p.get('context'):
+            people_data += f"\nContext: {p['context']}"
+        if p.get('notes'):
+            people_data += f"\nNotes: {p['notes'][:300]}"
+        if p.get('follow_ups'):
+            people_data += f"\nFollow-ups: {p['follow_ups']}"
+        if p.get('last_touched'):
+            people_data += f"\nLast updated: {p['last_touched']}"
     
-    # Filter out stop words, keep meaningful keywords
-    keywords = [w for w in words if w not in stop_words and len(w) > 1]
-    
-    return keywords
+    prompt = f"""You are a personal assistant. Here is everyone I know:
 
-
-def search_people_by_keywords(people_list: list, keywords: list) -> list:
-    """
-    Search people by keywords. Case-insensitive, partial match.
-    Returns list of matching people.
-    """
-    if not keywords:
-        return []
-    
-    matches = []
-    
-    for person in people_list:
-        # Combine all searchable text
-        searchable = " ".join([
-            person.get("name", ""),
-            person.get("context", ""),
-            person.get("notes", ""),
-            person.get("follow_ups", "")
-        ]).lower()
-        
-        # Check if ANY keyword matches
-        for keyword in keywords:
-            if keyword in searchable:
-                matches.append(person)
-                break  # Don't add same person twice
-    
-    return matches
-
-
-def generate_search_answer(question: str, matching_people: list) -> str:
-    """
-    Use LLM to answer the question based on matching people data.
-    """
-    if not matching_people:
-        return "No one matches that criteria."
-    
-    # Build context from matching people
-    people_info = ""
-    for p in matching_people:
-        people_info += f"\n- {p['name']}: {p.get('context', '')} | Notes: {p.get('notes', '')[:200]}"
-    
-    prompt = f"""Answer this question based on the people data below.
+{people_data}
 
 Question: "{question}"
 
-Matching people:{people_info}
-
 Rules:
 - Answer naturally and concisely
-- If multiple people match, list them
-- If the data doesn't fully answer the question, say what you know
-- Keep it short"""
+- Use ALL the data (context, notes, follow-ups) to answer
+- If multiple people match, list them all
+- If asking about a specific person, give their full info
+- If the data doesn't answer the question, say so honestly
+- Keep it short and conversational
+- Don't make up information that isn't in the data"""
 
     try:
         response = client.chat.completions.create(
@@ -186,78 +145,8 @@ Rules:
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Search answer error: {e}")
-        # Fallback: list names
-        names = [p["name"] for p in matching_people]
-        return f"Found: {', '.join(names)}"
-
-
-def answer_person_question(person_data: dict, question: str) -> str:
-    """
-    Use GPT to answer a question about a person based on stored data.
-    """
-    prompt = f"""Based on this information about {person_data['name']}, answer the question naturally and concisely.
-
-STORED INFORMATION:
-Name: {person_data['name']}
-Context: {person_data.get('context', 'No context')}
-Notes: {person_data.get('notes', 'No notes')}
-Follow-ups: {person_data.get('follow_ups', 'None')}
-Last updated: {person_data.get('last_touched', 'Unknown')}
-
-QUESTION: {question}
-
-Rules:
-- Answer naturally, like a helpful assistant
-- If the info doesn't contain the answer, say "I don't have that info about [name]"
-- Keep it concise
-- Include relevant dates if helpful"""
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"Answer generation error: {e}")
-        return f"Sorry, I couldn't process that question about {person_data['name']}."
-
-
-def search_people_by_criteria(people_list: list, search_query: str) -> list:
-    """
-    Use GPT to find people matching a search criteria.
-    """
-    if not people_list:
-        return []
-    
-    people_summary = "\n".join([
-        f"- {p['name']}: {p.get('context', '')} | Notes: {p.get('notes', '')[:100]}"
-        for p in people_list
-    ])
-    
-    prompt = f"""Given this list of people, find who matches the query.
-
-PEOPLE:
-{people_summary}
-
-QUERY: {search_query}
-
-Return JSON array of matching names only. Example: ["John", "Sarah"]
-If no matches, return: []"""
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1
-        )
-        result = response.choices[0].message.content.strip()
-        return json.loads(result)
-    except Exception as e:
-        print(f"People search error: {e}")
-        return []
+        print(f"People query error: {e}")
+        return "Sorry, I couldn't process that question."
 
 
 def semantic_person_match(existing_name: str, existing_context: str, new_name: str, new_context: str) -> str:
