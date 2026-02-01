@@ -6,7 +6,7 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from flask import Flask, jsonify
 
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENAI_API_KEY
-from classifier import classify, needs_confirmation, format_person_info, semantic_person_match, is_person_question, answer_person_question, extract_search_keywords, search_people_by_keywords, generate_search_answer
+from classifier import classify, needs_confirmation, format_person_info, semantic_person_match, is_person_question, answer_people_query
 from memory import save_entry, fix_entry, get_items, get_digest_data, find_person, find_similar_person, append_to_person, extract_identifier, get_all_people
 from prompts import DIGEST_PROMPT, get_top_items_prompt
 from openai import OpenAI
@@ -255,7 +255,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             idx = int(user_message.strip()) - 1
             if 0 <= idx < len(pending["matches"]):
                 selected = pending["matches"][idx]
-                answer = answer_person_question(selected, pending["original_question"])
+                answer = answer_people_query(pending["original_question"], [selected])
                 del context.user_data["pending_person_question"]
                 await update.message.reply_text(answer)
                 return
@@ -267,7 +267,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         confirmation = parse_confirmation(user_message)
         if confirmation == "CONFIRM" and len(pending["matches"]) == 1:
             selected = pending["matches"][0]
-            answer = answer_person_question(selected, pending["original_question"])
+            answer = answer_people_query(pending["original_question"], [selected])
             del context.user_data["pending_person_question"]
             await update.message.reply_text(answer)
             return
@@ -281,11 +281,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i, match in enumerate(pending["matches"]):
             identifier = extract_identifier(match.get("context", ""))
             if identifier:
-                # Check if identifier words are in user's reply
                 id_words = identifier.lower().replace("from ", "").replace("your ", "").split()
                 if any(word in user_lower for word in id_words if len(word) > 2):
                     selected = match
-                    answer = answer_person_question(selected, pending["original_question"])
+                    answer = answer_people_query(pending["original_question"], [selected])
                     del context.user_data["pending_person_question"]
                     await update.message.reply_text(answer)
                     return
@@ -303,78 +302,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Get all people
         all_people = get_all_people()
+        print(f"[DEBUG] Total people found: {len(all_people) if all_people else 0}")
+        
         if not all_people:
             await update.message.reply_text("I don't have any people saved yet.")
             return
         
-        print(f"[DEBUG] Total people found: {len(all_people)}")
-        print(f"[DEBUG] People names: {[p['name'] for p in all_people]}")
-        
-        # Extract keywords and search
-        keywords = extract_search_keywords(query)
-        print(f"[DEBUG] Keywords extracted: {keywords}")
-        
-        if keywords:
-            # Search by keywords
-            matches = search_people_by_keywords(all_people, keywords)
-            print(f"[DEBUG] Keyword matches: {[m['name'] for m in matches]}")
-            
-            if matches:
-                # Generate answer using LLM
-                answer = generate_search_answer(query, matches)
-                print(f"[DEBUG] LLM answer: {answer}")
-                await update.message.reply_text(answer)
-                return
-            else:
-                print(f"[DEBUG] No keyword matches, trying name matching")
-                # No keyword matches - try to find a name in the query
-                query_words = query.lower().split()
-                name_matches = []
-                for person in all_people:
-                    person_name_lower = person["name"].lower()
-                    for word in query_words:
-                        if word in person_name_lower or person_name_lower in word:
-                            name_matches.append(person)
-                            break
-                
-                print(f"[DEBUG] Name matches: {[m['name'] for m in name_matches]}")
-                
-                if name_matches:
-                    if len(name_matches) == 1:
-                        answer = answer_person_question(name_matches[0], query)
-                        await update.message.reply_text(answer)
-                        return
-                    else:
-                        # Multiple matches - ask which one
-                        context.user_data["pending_person_question"] = {
-                            "matches": name_matches,
-                            "original_question": query
-                        }
-                        reply = "Which one?\n"
-                        for i, m in enumerate(name_matches, 1):
-                            identifier = extract_identifier(m.get("context", ""))
-                            reply += f"{i}. {m['name']}"
-                            if identifier:
-                                reply += f", {identifier}"
-                            reply += "\n"
-                        await update.message.reply_text(reply)
-                        return
-                
-                await update.message.reply_text("No one matches that criteria.")
-                return
-        else:
-            print(f"[DEBUG] No keywords extracted, trying name fallback")
-            # No keywords extracted - might be a general question
-            # Try name matching as fallback
-            query_words = query.lower().split()
-            for person in all_people:
-                if person["name"].lower() in query.lower():
-                    answer = answer_person_question(person, query)
-                    await update.message.reply_text(answer)
-                    return
-            
-            await update.message.reply_text("I'm not sure who you're asking about. Try including a name or specific detail.")
-            return
+        # One LLM call - send all data + question
+        answer = answer_people_query(query, all_people)
+        print(f"[DEBUG] LLM answer: {answer}")
+        await update.message.reply_text(answer)
+        return
 
     # ----- TASKS PHRASES -----
     tasks_phrases = [
