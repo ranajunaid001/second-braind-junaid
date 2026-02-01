@@ -171,6 +171,77 @@ Example bad answer: **Jack** - Met at residency. Lives in Boston. **Works at:** 
         return "Sorry, I couldn't process that question."
 
 
+def answer_actionable_query(question: str, data: dict) -> str:
+    """
+    One LLM call — send people + things data, LLM returns today's actions.
+    """
+    if not data:
+        return "No data available."
+    
+    people_data = ""
+    for p in data.get("people", []):
+        people_data += f"\nName: {p['name']}"
+        if p.get('context'):
+            people_data += f", {p['context']}"
+        if p.get('notes'):
+            people_data += f", Notes: {p['notes'][:200]}"
+        if p.get('follow_ups'):
+            people_data += f", Action: {p['follow_ups']}"
+    
+    things_data = ""
+    for t in data.get("things", []):
+        things_data += f"\nTask: {t['task']}"
+        if t.get('due'):
+            things_data += f", due: {t['due']}"
+        if t.get('next_action'):
+            things_data += f", next: {t['next_action']}"
+    
+    today = datetime.now().strftime("%A, %B %d, %Y")
+    
+    prompt = f"""You are a personal assistant. Today is {today}.
+
+Here are the people I know and related actions:
+{people_data if people_data else "None"}
+
+Here are my open tasks:
+{things_data if things_data else "None"}
+
+Question: "{question}"
+
+Return up to 3 people-related actions (calls, texts, follow-ups, meetings) and up to 2 task actions from Things. Only include items that are actually actionable — not just info.
+
+If nothing is actionable today, say so.
+
+FORMATTING RULES:
+- NO markdown, no asterisks, no bold
+- NO dashes as separators
+- Use this exact format:
+
+People:
+1. action here
+2. action here
+
+Things:
+1. action here
+
+- If no people actions, skip the People section entirely
+- If no things actions, skip the Things section entirely
+- Keep each item to one short line
+- Include the person's name or task name
+- Include due date or timing if available"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Actionable query error: {e}")
+        return "Sorry, I couldn't process that."
+
+
 def semantic_person_match(existing_name: str, existing_context: str, new_name: str, new_context: str) -> str:
     """
     Use GPT to determine if two person entries are the same person.
