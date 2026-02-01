@@ -270,6 +270,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Didn't understand - clear and fall through to process as new message
         del context.user_data["pending_person_question"]
     
+    # ----- ACTIONABLE TASKS QUERY -----
+    action_phrases = [
+        # today
+        "items for today", "give me top things for today",
+        "what do i need to do today", "what's due today", "whats due today",
+        "today's tasks", "todays tasks", "what's on my plate", "whats on my plate",
+        "what should i do today", "what do i have today", "anything pending",
+        "my tasks", "my actions", "what's pending", "whats pending",
+        "what do i need to do", "what should i do", "what should i focus on",
+        "anything for today", "tasks for today", "what's up for today",
+        "whats up for today", "priorities", "priorities for today",
+        "what's coming up", "whats coming up", "anything due today",
+        "what's happening today", "whats happening today", "to do list",
+        "todo list", "todos", "to dos",
+        # this week
+        "tasks for this week", "this week's tasks", "this weeks tasks",
+        "what's due this week", "whats due this week", "anything this week",
+        "what do i have this week", "priorities this week", "what's coming up this week",
+        "whats coming up this week", "anything pending this week",
+        "weekly tasks", "week ahead", "the week ahead"
+    ]
+    
+    if user_message_lower in action_phrases or user_message_lower.rstrip("?") in action_phrases:
+        from memory import get_actionable_data
+        data = get_actionable_data()
+        if not data:
+            await update.message.reply_text("Could not fetch data.")
+            return
+        
+        reply = answer_actionable_query(user_message, data)
+        await update.message.reply_text(reply)
+        return
+
     # ----- DETECT PERSON QUESTION -----
     question_check = is_person_question(user_message)
     print(f"[DEBUG] Question check result: {question_check}")
@@ -322,39 +355,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         answer = answer_people_query(query, all_people)
         print(f"[DEBUG] LLM answer: {answer}")
         await update.message.reply_text(answer)
-        return
-
-    # ----- ACTIONABLE TASKS QUERY -----
-    action_phrases = [
-        # today
-        "items for today", "give me top things for today",
-        "what do i need to do today", "what's due today", "whats due today",
-        "today's tasks", "todays tasks", "what's on my plate", "whats on my plate",
-        "what should i do today", "what do i have today", "anything pending",
-        "my tasks", "my actions", "what's pending", "whats pending",
-        "what do i need to do", "what should i do", "what should i focus on",
-        "anything for today", "tasks for today", "what's up for today",
-        "whats up for today", "priorities", "priorities for today",
-        "what's coming up", "whats coming up", "anything due today",
-        "what's happening today", "whats happening today", "to do list",
-        "todo list", "todos", "to dos",
-        # this week
-        "tasks for this week", "this week's tasks", "this weeks tasks",
-        "what's due this week", "whats due this week", "anything this week",
-        "what do i have this week", "priorities this week", "what's coming up this week",
-        "whats coming up this week", "anything pending this week",
-        "weekly tasks", "week ahead", "the week ahead"
-    ]
-    
-    if user_message_lower in action_phrases or user_message_lower.rstrip("?") in action_phrases:
-        from memory import get_actionable_data
-        data = get_actionable_data()
-        if not data:
-            await update.message.reply_text("Could not fetch data.")
-            return
-        
-        reply = answer_actionable_query(user_message, data)
-        await update.message.reply_text(reply)
         return
 
     if user_message_lower.startswith("top"):
