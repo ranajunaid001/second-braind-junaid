@@ -91,7 +91,11 @@ def is_person_question(message: str) -> dict:
     message_lower = message.lower().strip()
     
     # Question indicators
-    question_starters = ["who ", "what ", "tell me", "where ", "when ", "how ", "why ", "does ", "is ", "are ", "do ", "anyone", "anybody"]
+    question_starters = [
+        "who ", "what ", "tell me", "tell about", "what about",
+        "where ", "when ", "how ", "why ", "does ", "is ", "are ",
+        "do ", "anyone", "anybody", "which ", "show me"
+    ]
     ends_with_question = message.endswith("?")
     starts_with_question = any(message_lower.startswith(q) for q in question_starters)
     
