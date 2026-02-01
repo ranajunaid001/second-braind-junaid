@@ -295,6 +295,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_message_lower in action_phrases or user_message_lower.rstrip("?") in action_phrases:
         from memory import get_actionable_data
         data = get_actionable_data()
+        print(f"[DEBUG] Actionable data - People: {len(data.get('people', []))}, Things: {len(data.get('things', []))}")
+        print(f"[DEBUG] People data: {data.get('people', [])}")
+        print(f"[DEBUG] Things data: {data.get('things', [])}")
         if not data:
             await update.message.reply_text("Could not fetch data.")
             return
